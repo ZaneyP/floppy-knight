@@ -146,10 +146,11 @@ window.addEventListener('keydown', e => {
 // ---------------------------------------------------------------------------
 // The floppy knight (Verlet ragdoll + rigidly gripped sword)
 // ---------------------------------------------------------------------------
-const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: 0.8, len: 59, wide: 1, pad: 3 };
-// Knight size & sword come from upgrades. Starts small (k = 0.8) and grows.
+const KNIGHT_BASE = 0.62; // starting knight scale (1 = original size)
+const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: KNIGHT_BASE, len: 46, wide: 1, pad: 3 };
+// Knight size & sword come from upgrades. Starts small (KNIGHT_BASE) and grows.
 function buildKnight(x, y) {
-  const u = G.upg, k = 0.8 * (1 + u.growth * 0.12);
+  const u = G.upg, k = KNIGHT_BASE * (1 + u.growth * 0.15);
   K.k = k;
   K.len = (74 + u.length * 17) * k;   // blade reach
   K.wide = 1 + u.width * 0.45;        // blade thickness (visual)
@@ -204,7 +205,7 @@ function stepKnight() {
     for (const [q, f, cap] of [[p.tip, 5, 36], [p.rHand, 2.5, 16], [p.rElb, 1.5, 10], [p.lHand, 1.5, 12], [p.pelvis, 1, 8], [p.lFoot, 1.2, 12], [p.rFoot, 1.2, 12]]) {
       const rx = q.x - h.x, ry = q.y - h.y, rl = Math.hypot(rx, ry) || 1;
       const tx = -ry / rl * G.spinDir, ty = rx / rl * G.spinDir;
-      if ((q.x - q.px) * tx + (q.y - q.py) * ty < cap * K.k / 0.8) { q.x += tx * f; q.y += ty * f; }
+      if ((q.x - q.px) * tx + (q.y - q.py) * ty < cap * K.k / KNIGHT_BASE) { q.x += tx * f; q.y += ty * f; }
     }
   }
   G.spinCd -= 1 / 60;
