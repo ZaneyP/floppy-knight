@@ -146,30 +146,44 @@ window.addEventListener('keydown', e => {
 // ---------------------------------------------------------------------------
 // The floppy knight (Verlet ragdoll + rigidly gripped sword)
 // ---------------------------------------------------------------------------
-const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0 };
+const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: 0.8, len: 59, wide: 1, pad: 3 };
+// Knight size & sword come from upgrades. Starts small (k = 0.8) and grows.
 function buildKnight(x, y) {
-  const P = (px, py, im) => ({ x: px, y: py, px, py, im });
+  const u = G.upg, k = 0.8 * (1 + u.growth * 0.12);
+  K.k = k;
+  K.len = (74 + u.length * 17) * k;   // blade reach
+  K.wide = 1 + u.width * 0.45;        // blade thickness (visual)
+  K.pad = 3 + u.width * 5;            // extra hit tolerance
+  const P = (dx, dy, im) => ({ x: x + dx * k, y: y + dy * k, px: x + dx * k, py: y + dy * k, im });
   const p = {
-    head: P(x, y, 0), neck: P(x, y + 18, 1), pelvis: P(x, y + 54, 1),
-    lElb: P(x - 20, y + 28, 1), lHand: P(x - 30, y + 44, 1),
-    rElb: P(x + 20, y + 28, 1), rHand: P(x + 30, y + 44, 1),
-    lKnee: P(x - 8, y + 78, 1), lFoot: P(x - 10, y + 102, 1),
-    rKnee: P(x + 8, y + 78, 1), rFoot: P(x + 10, y + 102, 1),
-    tip: P(x + 60, y + 120, 0.35), // heavy blade end = momentum
+    head: P(0, 0, 0), neck: P(0, 18, 1), pelvis: P(0, 54, 1),
+    lElb: P(-20, 28, 1), lHand: P(-30, 44, 1),
+    rElb: P(20, 28, 1), rHand: P(30, 44, 1),
+    lKnee: P(-8, 78, 1), lFoot: P(-10, 102, 1),
+    rKnee: P(8, 78, 1), rFoot: P(10, 102, 1),
+    tip: P(40, 44 + K.len / k, 0.35), // heavy blade end = momentum
   };
   const s = (a, b, l) => ({ a: p[a], b: p[b], l });
   K.p = p;
   K.pts = Object.values(p);
   K.sticks = [
-    s('head', 'neck', 18), s('neck', 'pelvis', 36), s('head', 'pelvis', 53),
-    s('neck', 'lElb', 22), s('lElb', 'lHand', 20), s('neck', 'rElb', 22), s('rElb', 'rHand', 20),
-    s('pelvis', 'lKnee', 24), s('lKnee', 'lFoot', 24), s('pelvis', 'rKnee', 24), s('rKnee', 'rFoot', 24),
-    s('rHand', 'tip', 80), s('rElb', 'tip', 97),
+    s('head', 'neck', 18 * k), s('neck', 'pelvis', 36 * k), s('head', 'pelvis', 53 * k),
+    s('neck', 'lElb', 22 * k), s('lElb', 'lHand', 20 * k), s('neck', 'rElb', 22 * k), s('rElb', 'rHand', 20 * k),
+    s('pelvis', 'lKnee', 24 * k), s('lKnee', 'lFoot', 24 * k), s('pelvis', 'rKnee', 24 * k), s('rKnee', 'rFoot', 24 * k),
+    s('rHand', 'tip', K.len), s('rElb', 'tip', K.len + 17 * k),
   ];
 }
-buildKnight(W / 2, H * 0.5);
 
 const GRAV = 0.32, DAMP = 0.985;
+const SPIN_CD = [0, 4, 3, 2.2];
+function trySpin() {
+  if (!G.upg.spin || G.spinCd > 0 || G.spinT > 0) return;
+  const p = K.p, h = p.head, t = p.tip;
+  const cross = (t.x - h.x) * (t.y - t.py) - (t.y - h.y) * (t.x - t.px);
+  G.spinDir = cross < 0 ? -1 : 1;
+  G.spinT = 0.75; G.spinCd = SPIN_CD[G.upg.spin];
+  sfx.whoosh(); tone(220, 0.5, 'triangle', 0.12, 3);
+}
 function stepKnight() {
   const p = K.p;
   let dx = pointer.x - p.head.x, dy = pointer.y - p.head.y;
@@ -177,12 +191,23 @@ function stepKnight() {
   if (d > mx) { dx *= mx / d; dy *= mx / d; }
   p.head.px = p.head.x; p.head.py = p.head.y;
   p.head.x += dx; p.head.y += dy;
+  const spinning = G.spinT > 0, g = spinning ? 0 : GRAV;
   for (const q of K.pts) {
     if (!q.im) continue;
     const vx = (q.x - q.px) * DAMP, vy = (q.y - q.py) * DAMP;
     q.px = q.x; q.py = q.y;
-    q.x += vx; q.y += vy + GRAV;
+    q.x += vx; q.y += vy + g;
   }
+  if (spinning) { // whirlwind: drive the body around the head
+    G.spinT -= 1 / 60;
+    const h = p.head;
+    for (const [q, f, cap] of [[p.tip, 5, 36], [p.rHand, 2.5, 16], [p.rElb, 1.5, 10], [p.lHand, 1.5, 12], [p.pelvis, 1, 8], [p.lFoot, 1.2, 12], [p.rFoot, 1.2, 12]]) {
+      const rx = q.x - h.x, ry = q.y - h.y, rl = Math.hypot(rx, ry) || 1;
+      const tx = -ry / rl * G.spinDir, ty = rx / rl * G.spinDir;
+      if ((q.x - q.px) * tx + (q.y - q.py) * ty < cap * K.k / 0.8) { q.x += tx * f; q.y += ty * f; }
+    }
+  }
+  G.spinCd -= 1 / 60;
   for (let it = 0; it < 10; it++) {
     for (const s of K.sticks) {
       const a = s.a, b = s.b;
@@ -237,26 +262,43 @@ const BIOMES = [
 ];
 const PRE = ['Ash', 'Bram', 'Kings', 'Wolf', 'Raven', 'Stone', 'Thorn', 'Elder', 'Mist', 'Iron', 'Oak', 'Gold', 'Frost', 'Dun', 'Black', 'High', 'Red', 'Willow', 'Storm', 'Hollow'];
 const SUF = ['ford', 'wick', 'haven', 'hold', 'moor', 'gate', 'vale', 'reach', 'keep', 'bury', 'helm', 'spire', 'watch', 'fell'];
-const townName = n => PRE[Math.floor(hash(n * 7919 + 3) * PRE.length)] + SUF[Math.floor(hash(n * 104729 + 11) * SUF.length)];
+const townName = n => PRE[Math.floor(hash(Math.imul(n, 0x9e3779b1) + 0x68e31da4) * PRE.length)] + SUF[Math.floor(hash(Math.imul(n + 77, 0x85ebca6b) ^ 0x2545f491) * SUF.length)];
 
 const DEFS = {
   bandit:  { r: 14, hp: 1, spd: 55,  dmg: 1, score: 100,  min: 6,  color: '#8a5530', mask: '#2b2b2b', unlock: 1 },
-  runner:  { r: 12, hp: 1, spd: 112, dmg: 1, score: 150,  min: 6,  color: '#3c6e8f', mask: '#1d2a33', unlock: 2 },
-  archer:  { r: 14, hp: 1, spd: 55,  dmg: 1, score: 200,  min: 6,  color: '#4f6b2c', mask: '#1f2a12', unlock: 3 },
-  brute:   { r: 24, hp: 4, spd: 32,  dmg: 2, score: 400,  min: 7,  color: '#7a3434', mask: '#2a1a1a', unlock: 4 },
-  shield:  { r: 16, hp: 2, spd: 45,  dmg: 1, score: 300,  min: 14, color: '#5a5e66', mask: '#222', unlock: 5 },
-  bomber:  { r: 14, hp: 1, spd: 72,  dmg: 2, score: 250,  min: 6,  color: '#3d3d3d', mask: '#a52a2a', unlock: 6 },
+  armored: { r: 15, hp: 3, spd: 46,  dmg: 1, score: 300,  min: 6,  color: '#7d8794', mask: '#3a4049', unlock: 2, armor: true },
+  runner:  { r: 12, hp: 1, spd: 112, dmg: 1, score: 150,  min: 6,  color: '#3c6e8f', mask: '#1d2a33', unlock: 3 },
+  archer:  { r: 14, hp: 1, spd: 55,  dmg: 1, score: 200,  min: 6,  color: '#4f6b2c', mask: '#1f2a12', unlock: 4 },
+  brute:   { r: 24, hp: 4, spd: 32,  dmg: 2, score: 400,  min: 7,  color: '#7a3434', mask: '#2a1a1a', unlock: 5 },
+  shield:  { r: 16, hp: 2, spd: 45,  dmg: 1, score: 300,  min: 14, color: '#5a5e66', mask: '#222', unlock: 6 },
+  bomber:  { r: 14, hp: 1, spd: 72,  dmg: 2, score: 250,  min: 6,  color: '#3d3d3d', mask: '#a52a2a', unlock: 7 },
   king:    { r: 38, hp: 22, spd: 22, dmg: 3, score: 3000, min: 9,  color: '#5b2a6b', mask: '#1a1020', unlock: 999 },
 };
-const SPAWN_WEIGHT = { bandit: 10, runner: 5, archer: 3, brute: 2, shield: 3, bomber: 2 };
+const SPAWN_WEIGHT = { bandit: 10, armored: 5, runner: 5, archer: 3, brute: 2, shield: 3, bomber: 2 };
 const NEW_ENEMY = {
-  2: 'NEW: Runners. Fast and twitchy!',
-  3: 'NEW: Archers. Swat arrows out of the air!',
-  4: 'NEW: Brutes. Tough. Hit them hard and often.',
-  5: 'NEW: Shieldbearers. Only a hard, fast swing breaks through!',
-  6: 'NEW: Bombers. Kill them away from the traveler. Their blast hurts bandits too!',
-  8: 'NEW: Elite bandits (gold trim) are tougher and worth double.',
+  2: 'NEW: Armored bandits. Each hit only does 1 damage and knocks them back. Takes 3 hits!',
+  3: 'NEW: Runners. Fast and twitchy!',
+  4: 'NEW: Archers. Swat arrows out of the air!',
+  5: 'NEW: Brutes. Tough. Hit them hard and often.',
+  6: 'NEW: Shieldbearers. Only a hard, fast swing breaks through!',
+  7: 'NEW: Bombers. Kill them away from the traveler. Their blast hurts bandits too!',
+  9: 'NEW: Elite bandits (gold trim) are tougher and worth double.',
 };
+
+// Upgrades offered between towns (pick 1 of 3)
+const UPGRADES = [
+  { id: 'spin', name: 'Whirlwind', max: 3, desc: l => l === 0 ? 'CLICK to spin your knight into a sword tornado.' : `Whirlwind recharges faster (${SPIN_CD[l + 1]}s).` },
+  { id: 'length', name: 'Longer Blade', max: 4, desc: () => 'More reach. Bigger arcs, faster tip.' },
+  { id: 'width', name: 'Broadsword', max: 4, desc: () => 'A wider blade that is easier to connect with.' },
+  { id: 'archers', name: 'Hired Archer', max: 3, desc: l => l === 0 ? 'An archer walks with the traveler and shoots bandits.' : 'Hire another archer for the escort.' },
+  { id: 'keen', name: 'Keen Edge', max: 3, desc: () => 'Slower swings still cut, and crits come easier.' },
+  { id: 'vigor', name: 'Sturdy Boots', max: 3, desc: () => 'Traveler gets +1 max heart (and heals 1).' },
+  { id: 'buckler', name: 'Buckler', max: 3, desc: l => `Traveler blocks the first ${l + 1} hit${l ? 's' : ''} on every road.` },
+  { id: 'growth', name: "Giant's Draught", max: 3, desc: () => 'Your knight grows bigger: longer limbs, longer sword.' },
+  { id: 'herbs', name: 'Healing Herbs', max: Infinity, desc: () => 'Fully heal the traveler.', cond: () => G.hp < G.maxHp },
+];
+const freshUpg = () => ({ spin: 0, length: 0, width: 0, archers: 0, keen: 0, vigor: 0, buckler: 0, growth: 0, herbs: 0 });
+const ALLY_OFF = [[-62, 16], [62, 16], [0, 64]];
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -269,7 +311,9 @@ const G = {
   shake: 0, hitstop: 0, combo: 0, comboT: 0, kills: 0, levelKills: 0, bonus: 0, whooshCd: 0,
   traveler: { x: W / 2, y: TRAVELER_Y, anim: 0, hurtT: 0, alpha: 1 },
   town: townName(1), biome: BIOMES[0], boss: null, bossSpawned: false, isBoss: false, newHigh: false,
+  upg: freshUpg(), choices: [], spinT: 0, spinCd: 0, spinDir: 1, blocks: 0, allyCd: [], allyArrows: [],
 };
+buildKnight(W / 2, H * 0.5);
 let paused = false;
 function pause() { if (G.state === 'play' || G.state === 'intro' || G.state === 'arrive') paused = true; }
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
@@ -277,6 +321,8 @@ window.addEventListener('blur', pause);
 
 function startGame() {
   G.level = 1; G.score = 0; G.hp = G.maxHp = 5; G.kills = 0; G.combo = 0; G.newHigh = false;
+  G.upg = freshUpg(); G.spinCd = 0;
+  buildKnight(K.p.head.x, K.p.head.y);
   startLevel();
 }
 function startLevel() {
@@ -286,6 +332,7 @@ function startLevel() {
   G.town = townName(G.level); G.biome = BIOMES[(G.level - 1) % BIOMES.length];
   const tr = G.traveler; tr.y = TRAVELER_Y; tr.alpha = 1; tr.hurtT = 0;
   G.prog = 0; G.walk = WALK;
+  G.blocks = G.upg.buckler; G.allyArrows = []; G.allyCd = [0.8, 1.3, 1.8];
   G.state = 'intro'; G.stateT = 0;
 }
 function beginArrive() {
@@ -301,6 +348,26 @@ function completeLevel() {
   G.hp = Math.min(G.maxHp, G.hp + 1);
   saveBest(G.level);
   sfx.fanfare();
+  const pool = UPGRADES.filter(u => G.upg[u.id] < u.max && (!u.cond || u.cond()));
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  G.choices = pool.slice(0, 3);
+}
+const CARD_Y = 372, CARD_H = 112, CARD_GAP = 124;
+const cardAt = (x, y) => {
+  for (let i = 0; i < G.choices.length; i++) {
+    const cy = CARD_Y + i * CARD_GAP;
+    if (x > 40 && x < W - 40 && y > cy && y < cy + CARD_H) return i;
+  }
+  return -1;
+};
+function chooseUpgrade(u) {
+  G.upg[u.id]++;
+  if (u.id === 'vigor') { G.maxHp++; G.hp = Math.min(G.maxHp, G.hp + 1); }
+  if (u.id === 'herbs') G.hp = G.maxHp;
+  if (u.id === 'length' || u.id === 'width' || u.id === 'growth') buildKnight(K.p.head.x, K.p.head.y);
+  sfx.pickup();
+  G.level++; startLevel();
+  if (u.id === 'spin' && G.upg.spin === 1) addText('CLICK to spin!', W / 2, 560, '#7dff9a', 26, 3);
 }
 function gameOver() {
   G.state = 'gameover'; G.stateT = 0;
@@ -315,21 +382,29 @@ function onClick(x, y) {
   if (x > W - 64 && y > H - 64) { setMuted(!muted); return; }
   if (paused) { paused = false; return; }
   if (G.state === 'title') startGame();
-  else if (G.state === 'complete' && G.stateT > 0.8) { G.level++; startLevel(); }
+  else if (G.state === 'complete' && G.stateT > 0.8) {
+    if (!G.choices.length) { G.level++; startLevel(); return; }
+    const i = cardAt(x, y);
+    if (i >= 0) chooseUpgrade(G.choices[i]);
+  }
+  else if (G.state === 'play' || G.state === 'intro' || G.state === 'arrive') trySpin();
   else if (G.state === 'gameover' && G.stateT > 1.0) startGame();
 }
 
 // ---------------------------------------------------------------------------
 // Enemies
 // ---------------------------------------------------------------------------
+// Nearest world y an enemy may stand at: in front of the castle and on the visible side of the hill
+const frontY = () => Math.max(-270, castleWorldY() + 40);
 function spawnEnemy(type, x, y) {
   const d = DEFS[type], lv = G.level;
-  const elite = type !== 'king' && lv >= 8 && Math.random() < Math.min(0.5, (lv - 7) * 0.06);
+  y = Math.max(y, frontY());
+  const elite = type !== 'king' && lv >= 9 && Math.random() < Math.min(0.5, (lv - 8) * 0.06);
   const e = {
     type, d, x, y, kx: 0, ky: 0, r: d.r * (elite ? 1.12 : 1),
     hp: d.hp + (elite ? 1 : 0) + (type === 'king' ? lv : 0),
     spd: d.spd * (1 + Math.min(lv - 1, 20) * 0.045) * rand(0.9, 1.1),
-    t: rand(0, 10), hitCd: 0, atkCd: 0.6, flash: 0, lunge: 0, elite, flee: false, dead: false, phase: rand(0, TAU), fx: 1,
+    t: rand(0, 10), hitCd: 0, atkCd: 0.6, flash: 0, lunge: 0, stun: 0, age: 0, elite, flee: false, dead: false, phase: rand(0, TAU), fx: 1,
   };
   if (type === 'archer') { e.standY = rand(-140, 380); e.shootT = rand(0.8, 1.8); e.draw = 0; }
   if (type === 'king') e.summonT = 4;
@@ -344,9 +419,10 @@ function spawnRandom() {
   for (const [k, w] of pool) { if ((r -= w) < 0) { type = k; break; } }
   const side = Math.random();
   let x, y;
-  if (type === 'archer' || side < 0.64) { x = rand(30, W - 30); y = -270; }
-  else if (side < 0.82) { x = -100; y = rand(-150, 600); }
-  else { x = W + 100; y = rand(-150, 600); }
+  const fy = frontY();
+  if (type === 'archer' || side < 0.64) { x = rand(30, W - 30); y = fy; }
+  else if (side < 0.82) { x = -100; y = rand(Math.max(-150, fy), 600); }
+  else { x = W + 100; y = rand(Math.max(-150, fy), 600); }
   // occasional pack of plain bandits
   if (lv >= 3 && type === 'bandit' && Math.random() < 0.25) {
     for (let i = 0; i < 2; i++) spawnEnemy('bandit', clamp(x + rand(-50, 50), 20, W - 20), y - rand(20, 60));
@@ -366,16 +442,21 @@ function updateEnemies(dt) {
   const tr = G.traveler;
   for (const e of G.enemies) {
     if (e.dead) continue;
-    e.t += dt; e.hitCd -= dt; e.flash -= dt; e.atkCd -= dt; e.lunge -= dt;
+    e.t += dt; e.hitCd -= dt; e.flash -= dt; e.atkCd -= dt; e.lunge -= dt; e.age += dt;
     e.x += e.kx * dt; e.y += e.ky * dt;
     const kd = Math.pow(0.015, dt); e.kx *= kd; e.ky *= kd;
+    if (e.stun > 0 && !e.flee) { // staggered after a hit: no walking, no attacking
+      e.stun -= dt; e.moving = false;
+      e.x = clamp(e.x, -110, W + 110); e.y = Math.max(e.y, frontY() - 15);
+      continue;
+    }
     const dx = tr.x - e.x, dy = tr.y - e.y, dist = Math.hypot(dx, dy) || 1;
     let mvx = 0, mvy = 0;
     if (e.flee) {
       mvx = (e.x < W / 2 ? -1 : 1) * e.spd * 2.4; mvy = -e.spd * 0.6;
       if (e.x < -160 || e.x > W + 160 || e.y < -400) e.dead = true;
     } else if (e.type === 'archer') {
-      if (e.y < e.standY) mvy = e.spd;
+      if (e.y < Math.max(e.standY, castleWorldY() + 70)) mvy = e.spd;
       else {
         e.shootT -= dt; e.draw -= dt;
         if (e.shootT <= 0) { shootArrow(e); e.shootT = rand(2.0, 3.2) * Math.max(0.55, 1 - G.level * 0.025); }
@@ -404,7 +485,7 @@ function updateEnemies(dt) {
     if (Math.abs(mvx) > 1) e.fx = mvx > 0 ? 1 : -1;
     e.x += mvx * dt; e.y += mvy * dt;
     e.moving = Math.hypot(mvx, mvy) > 1;
-    if (!e.flee) { e.x = clamp(e.x, -110, W + 110); e.y = Math.max(e.y, -380); }
+    if (!e.flee) { e.x = clamp(e.x, -110, W + 110); e.y = Math.max(e.y, frontY() - 15); }
   }
   // separation
   const es = G.enemies;
@@ -434,12 +515,13 @@ function swordHits() {
     const w = warp(e.x, e.y);
     if (hidden(w)) continue;
     const sd = segDist(w.x, w.y - 4 * w.s, h.x, h.y, t.x, t.y);
-    if (sd.d > e.r * w.s + 6) continue;
+    if (sd.d > e.r * w.s + K.pad) continue;
     const vx = lerp(hvx, tvx, sd.t), vy = lerp(hvy, tvy, sd.t), sp = Math.hypot(vx, vy);
     if (sp < 3.5) continue;
     const nx = vx / sp, ny = vy / sp;
     e.hitCd = 0.2;
-    if (sp < e.d.min) {
+    const keen = G.upg.keen;
+    if (sp < Math.max(3.5, e.d.min - keen * 1.5)) {
       const mass = e.r / 14;
       e.kx += nx * 90 / mass; e.ky += ny * 90 / mass;
       if (e.type === 'shield' || e.type === 'king') {
@@ -448,7 +530,7 @@ function swordHits() {
       }
       continue;
     }
-    const dmg = sp >= 24 ? 3 : sp >= 15 ? 2 : 1;
+    const dmg = sp >= 24 - keen * 3 ? 3 : sp >= 15 - keen * 2 ? 2 : 1;
     damageEnemy(e, dmg, nx, ny, sp, sd.x, sd.y);
   }
   // pickups: touch with any part of the knight
@@ -461,15 +543,20 @@ function swordHits() {
   }
 }
 function damageEnemy(e, dmg, nx, ny, sp, hx, hy) {
+  const armor = e.d.armor;
+  if (armor) dmg = 1; // plate armor: every hit counts as one, no matter how hard
   e.hp -= dmg; e.flash = 0.12;
   const mass = e.r / 14;
-  const kb = (90 + sp * 14) / mass;
+  const kb = (90 + sp * 14) / mass * (armor ? 1.9 : 1);
   e.kx += nx * kb; e.ky += ny * kb;
-  burst(hx, hy, '#fff3c4', 6 + dmg * 3, 260, 3);
+  burst(hx, hy, armor ? '#ffffff' : '#fff3c4', 6 + dmg * 3, 260, 3);
   G.shake = Math.max(G.shake, 2 + dmg * 2);
-  if (dmg >= 3) { const w = warp(e.x, e.y); addText('CRIT!', w.x, w.y - (e.r + 18) * w.s, '#ffcf3f', 18, 0.7); }
+  if (dmg >= 3 && !armor) { const w = warp(e.x, e.y); addText('CRIT!', w.x, w.y - (e.r + 18) * w.s, '#ffcf3f', 18, 0.7); }
   if (e.hp <= 0) killEnemy(e, nx, ny, sp);
-  else sfx.hit();
+  else {
+    e.stun = e.type === 'king' ? 0.08 : armor ? 0.5 : 0.25;
+    if (armor) { sfx.clank(); sfx.hit(); } else sfx.hit();
+  }
 }
 function killEnemy(e, nx, ny, sp) {
   e.dead = true;
@@ -521,6 +608,13 @@ function hurtTraveler(n, force) {
   if (G.state !== 'play' && G.state !== 'intro') return;
   const tr = G.traveler;
   if (tr.hurtT > 0 && !force) return;
+  if (G.blocks > 0) {
+    G.blocks--; tr.hurtT = 0.5; sfx.clank();
+    const bw = warp(tr.x, tr.y);
+    sparks(bw.x, bw.y - 20, 12);
+    addText('BLOCKED!', bw.x, bw.y - 56 * bw.s, '#cfe8ff', 22, 1);
+    return;
+  }
   G.hp -= n; tr.hurtT = 0.8;
   G.shake = Math.max(G.shake, 10);
   G.combo = 0;
@@ -585,7 +679,7 @@ function update(dt) {
     }
     if (G.isBoss && !G.bossSpawned && G.levelTime > G.levelDur * 0.45) {
       G.bossSpawned = true;
-      G.boss = spawnEnemy('king', W / 2, -300);
+      G.boss = spawnEnemy('king', W / 2, frontY());
       addText('THE BANDIT KING!', W / 2, 360, '#e7b6ff', 34, 2);
       sfx.boss();
       G.shake = 12;
@@ -605,13 +699,43 @@ function update(dt) {
   }
   if (G.state === 'play' || G.state === 'intro' || G.state === 'arrive') swordHits();
 
+  // hired archers escorting the traveler
+  if (G.upg.archers && (G.state === 'play' || G.state === 'intro')) {
+    for (let i = 0; i < G.upg.archers; i++) {
+      G.allyCd[i] -= dt;
+      if (G.allyCd[i] > 0) continue;
+      const ax = tr.x + ALLY_OFF[i][0], ay = tr.y + ALLY_OFF[i][1] - 14;
+      let best = null, bd = 560;
+      for (const e of G.enemies) {
+        if (e.dead || e.flee || e.age < 0.4) continue;
+        const d = Math.hypot(e.x - ax, e.y - ay);
+        if (d < bd && warp(e.x, e.y).y > 110) { bd = d; best = e; }
+      }
+      if (!best) { G.allyCd[i] = 0.2; continue; }
+      const ang = Math.atan2(best.y - ay, best.x - ax);
+      G.allyArrows.push({ x: ax, y: ay, vx: Math.cos(ang) * 520, vy: Math.sin(ang) * 520, life: 1.6 });
+      G.allyCd[i] = rand(1.3, 1.7);
+      tone(1100, 0.06, 'triangle', 0.05, 0.6);
+    }
+  }
+  for (const a of G.allyArrows) {
+    a.x += a.vx * dt; a.y += a.vy * dt; a.life -= dt;
+    for (const e of G.enemies) {
+      if (e.dead || Math.hypot(e.x - a.x, e.y - a.y) > e.r + 5) continue;
+      const sp = Math.hypot(a.vx, a.vy), w = warp(e.x, e.y);
+      damageEnemy(e, 1, a.vx / sp, a.vy / sp, 8, w.x, w.y);
+      a.life = 0; break;
+    }
+  }
+  G.allyArrows = G.allyArrows.filter(a => a.life > 0);
+
   // arrows
   const p = K.p;
   for (const a of G.arrows) {
     a.x += a.vx * dt; a.y += a.vy * dt; a.life -= dt;
     const aw = warp(a.x, a.y);
     const sd = segDist(aw.x, aw.y, p.rHand.x, p.rHand.y, p.tip.x, p.tip.y);
-    let blocked = sd.d < 11;
+    let blocked = sd.d < 8 + K.pad;
     if (!blocked) for (const q of K.pts) if (Math.hypot(q.x - aw.x, q.y - aw.y) < 12) { blocked = true; break; }
     if (blocked) {
       a.life = 0; sparks(aw.x, aw.y, 10); sfx.clank();
@@ -968,6 +1092,13 @@ function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
       ctx.strokeStyle = '#c0c6cf'; ctx.lineWidth = 2; ctx.stroke();
       circle(0, 4, 3, '#c0c6cf');
       break;
+    case 'armored':
+      circle(0, -15, 8, '#9aa4b0'); // great helm over the head
+      ctx.fillStyle = '#2a2f36'; ctx.fillRect(-6, -16, 12, 3); ctx.fillRect(-1, -16, 2, 7);
+      circle(-9, -5, 4.5, '#b4bdc8'); circle(9, -5, 4.5, '#b4bdc8'); // pauldrons
+      ctx.fillStyle = '#5c6570'; circle(-3, 1, 1.2, '#5c6570'); circle(3, 1, 1.2, '#5c6570');
+      ctx.strokeStyle = '#d9dee6'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(11, 2); ctx.lineTo(19, -10); ctx.stroke();
+      break;
     case 'bomber': {
       circle(11, 2, 7, '#1c1c1c'); circle(9, 0, 2, '#555');
       ctx.strokeStyle = '#a07a3a'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(14, -4); ctx.quadraticCurveTo(18, -9, 16, -12); ctx.stroke();
@@ -989,14 +1120,20 @@ function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
 }
 
 function drawKnight() {
-  const p = K.p;
+  const p = K.p, k = K.k;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const OUT = '#20252e', STEEL = '#cfd7e0', STEEL2 = '#97a3b2', TAB = '#b82e2e';
   const poly = (pts, w, c) => {
     ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
   };
-  const limb = (pts, w, c) => { poly(pts, w + 4, OUT); poly(pts, w, c); };
+  const limb = (pts, w, c) => { poly(pts, (w + 4) * k, OUT); poly(pts, w * k, c); };
+  if (G.spinT > 0) {
+    ctx.globalAlpha = Math.min(1, G.spinT * 3) * 0.3;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 8 * K.wide;
+    ctx.beginPath(); ctx.arc(p.head.x, p.head.y, K.len + 40 * k, 0, TAU); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
   // sword trail
   const tr = K.trail;
   if (tr.length > 2 && tr[0].s > 7) {
@@ -1008,22 +1145,21 @@ function drawKnight() {
   }
   limb([p.pelvis, p.lKnee, p.lFoot], 8, STEEL2);
   limb([p.pelvis, p.rKnee, p.rFoot], 8, STEEL2);
-  circle(p.lFoot.x, p.lFoot.y, 4.5, OUT); circle(p.rFoot.x, p.rFoot.y, 4.5, OUT);
+  circle(p.lFoot.x, p.lFoot.y, 4.5 * k, OUT); circle(p.rFoot.x, p.rFoot.y, 4.5 * k, OUT);
   limb([p.neck, p.lElb, p.lHand], 7, STEEL2);
-  circle(p.lHand.x, p.lHand.y, 4, OUT);
+  circle(p.lHand.x, p.lHand.y, 4 * k, OUT);
   limb([p.neck, p.pelvis], 18, STEEL);
-  poly([p.neck, p.pelvis], 10, TAB);
-  // belt
+  poly([p.neck, p.pelvis], 10 * k, TAB);
   const bx = lerp(p.neck.x, p.pelvis.x, 0.78), by = lerp(p.neck.y, p.pelvis.y, 0.78);
-  circle(bx, by, 4, '#d4af37');
-  // helmet
+  circle(bx, by, 4 * k, '#d4af37');
+  // helmet + plume
   const h = p.head, ang = Math.atan2(h.y - p.neck.y, h.x - p.neck.x) + Math.PI / 2;
   const hvx = h.x - h.px, hvy = h.y - h.py;
-  ctx.strokeStyle = '#d63a3a'; ctx.lineWidth = 6;
-  ctx.beginPath(); ctx.moveTo(h.x, h.y - 6);
-  ctx.quadraticCurveTo(h.x - clamp(hvx, -20, 20) * 1.2, h.y - 22, h.x - clamp(hvx, -30, 30) * 2 - 10, h.y - 14 - clamp(hvy, -20, 20));
+  ctx.strokeStyle = '#d63a3a'; ctx.lineWidth = 6 * k;
+  ctx.beginPath(); ctx.moveTo(h.x, h.y - 6 * k);
+  ctx.quadraticCurveTo(h.x - clamp(hvx, -20, 20) * 1.2 * k, h.y - 22 * k, h.x - (clamp(hvx, -30, 30) * 2 + 10) * k, h.y - (14 + clamp(hvy, -20, 20)) * k);
   ctx.stroke();
-  ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(ang);
+  ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(ang); ctx.scale(k, k);
   circle(0, 0, 13, OUT); circle(0, 0, 11, STEEL);
   ctx.fillStyle = OUT; ctx.fillRect(-8, -1, 16, 3); ctx.fillRect(-1, -1, 2, 9);
   ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(-4, -5, 3, 0, TAU); ctx.fill();
@@ -1031,19 +1167,76 @@ function drawKnight() {
   limb([p.neck, p.rElb, p.rHand], 7, STEEL2);
   // sword
   const sx = p.tip.x - p.rHand.x, sy = p.tip.y - p.rHand.y, len = Math.hypot(sx, sy) || 1;
-  const ux = sx / len, uy = sy / len, nx = -uy, ny = ux;
+  const ux = sx / len, uy = sy / len, nx = -uy, ny = ux, bw = k * K.wide;
   const P2 = (a, b) => ({ x: p.rHand.x + ux * a + nx * b, y: p.rHand.y + uy * a + ny * b });
-  poly([P2(-13, 0), P2(4, 0)], 5, '#5a3a20');
-  circle(P2(-14, 0).x, P2(-14, 0).y, 4, '#d4af37');
-  const fast = K.tipSpeed > 6;
-  ctx.fillStyle = fast ? '#ffffff' : '#e3e9f0'; ctx.strokeStyle = OUT; ctx.lineWidth = 2;
+  poly([P2(-13 * k, 0), P2(4 * k, 0)], 5 * k, '#5a3a20');
+  circle(P2(-14 * k, 0).x, P2(-14 * k, 0).y, 4 * k, '#d4af37');
+  ctx.fillStyle = K.tipSpeed > 6 ? '#ffffff' : '#e3e9f0'; ctx.strokeStyle = OUT; ctx.lineWidth = 2;
   ctx.beginPath();
-  const b1 = P2(6, -4.5), b2 = P2(len - 14, -3.5), b3 = P2(len, 0), b4 = P2(len - 14, 3.5), b5 = P2(6, 4.5);
+  const b1 = P2(6 * k, -4.5 * bw), b2 = P2(len - 14 * bw, -3.6 * bw), b3 = P2(len, 0), b4 = P2(len - 14 * bw, 3.6 * bw), b5 = P2(6 * k, 4.5 * bw);
   ctx.moveTo(b1.x, b1.y); ctx.lineTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y); ctx.lineTo(b4.x, b4.y); ctx.lineTo(b5.x, b5.y); ctx.closePath();
   ctx.fill(); ctx.stroke();
-  poly([P2(10, 0), P2(len - 18, 0)], 1.5, '#9aa6b4');
-  poly([P2(5, -12), P2(5, 12)], 5, '#d4af37');
-  circle(p.rHand.x, p.rHand.y, 4.5, OUT);
+  poly([P2(10 * k, 0), P2(len - 18 * bw, 0)], 1.5 * K.wide, '#9aa6b4');
+  poly([P2(5 * k, -(9 + 3 * K.wide) * k), P2(5 * k, (9 + 3 * K.wide) * k)], 5 * k, '#d4af37');
+  circle(p.rHand.x, p.rHand.y, 4.5 * k, OUT);
+}
+
+function drawAlly(i) {
+  const tr = G.traveler, w = warp(tr.x + ALLY_OFF[i][0], tr.y + ALLY_OFF[i][1]);
+  const st = G.walk > 1 ? Math.sin(tr.anim + i * 2) : 0;
+  ctx.save(); ctx.globalAlpha = tr.alpha; ctx.translate(w.x, w.y); ctx.scale(w.s, w.s);
+  ellipse(0, 6, 12, 5, 'rgba(0,0,0,0.25)');
+  ctx.fillStyle = '#3b2a1e';
+  ctx.fillRect(-5, -4 + st * 3, 4, 9); ctx.fillRect(1, -4 - st * 3, 4, 9);
+  circle(0, -12, 10, '#2f7d5b');
+  ctx.fillStyle = '#6b4423'; ctx.fillRect(-9, -20, 4, 16); // quiver
+  circle(0, -26, 7, '#2a6a4c'); circle(0, -27, 4.5, '#245c42'); // hood from behind
+  ctx.strokeStyle = '#6b4423'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(2, -24, 11, Math.PI + 0.6, -0.6); ctx.stroke();
+  ctx.restore();
+}
+
+function drawUpgradeIcon(id, x, y) {
+  circle(x, y, 28, 'rgba(255,226,122,0.15)');
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const sword = (len, wdt) => {
+    ctx.strokeStyle = '#e3e9f0'; ctx.lineWidth = wdt; ctx.beginPath(); ctx.moveTo(x - len / 2, y + len / 2); ctx.lineTo(x + len / 2, y - len / 2); ctx.stroke();
+    ctx.strokeStyle = '#d4af37'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x - len / 2 + 2, y + len / 2 - 12); ctx.lineTo(x - len / 2 + 12, y + len / 2 - 2); ctx.stroke();
+  };
+  switch (id) {
+    case 'spin':
+      ctx.strokeStyle = '#7dff9a'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, y, 15, 0.3, TAU - 0.6); ctx.stroke();
+      ctx.fillStyle = '#7dff9a'; ctx.beginPath(); ctx.moveTo(x + 15, y - 1); ctx.lineTo(x + 22, y - 12); ctx.lineTo(x + 8, y - 10); ctx.fill();
+      break;
+    case 'length': sword(40, 4); break;
+    case 'width': sword(30, 9); break;
+    case 'archers':
+      ctx.strokeStyle = '#c08a4a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x - 6, y, 16, -1.2, 1.2); ctx.stroke();
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x - 12, y); ctx.lineTo(x + 18, y); ctx.stroke();
+      ctx.fillStyle = '#ddd'; ctx.beginPath(); ctx.moveTo(x + 22, y); ctx.lineTo(x + 14, y - 5); ctx.lineTo(x + 14, y + 5); ctx.fill();
+      break;
+    case 'keen':
+      sword(34, 5);
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x + 12, y - 20); ctx.lineTo(x + 15, y - 13); ctx.lineTo(x + 22, y - 10); ctx.lineTo(x + 15, y - 7); ctx.lineTo(x + 12, y); ctx.lineTo(x + 9, y - 7); ctx.lineTo(x + 2, y - 10); ctx.lineTo(x + 9, y - 13); ctx.fill();
+      break;
+    case 'vigor':
+      heartPath(x, y - 14, 28); ctx.fillStyle = '#ff4d5e'; ctx.fill();
+      text('+', x + 14, y - 12, 18, '#fff');
+      break;
+    case 'buckler':
+      ctx.fillStyle = '#8b6b3e'; ctx.beginPath(); ctx.moveTo(x - 14, y - 14); ctx.lineTo(x + 14, y - 14); ctx.lineTo(x + 14, y + 2); ctx.quadraticCurveTo(x, y + 18, x, y + 18); ctx.quadraticCurveTo(x - 14, y + 10, x - 14, y + 2); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#c0c6cf'; ctx.lineWidth = 3; ctx.stroke();
+      break;
+    case 'growth':
+      circle(x, y + 2, 15, '#20252e'); circle(x, y + 2, 13, '#cfd7e0');
+      ctx.fillStyle = '#20252e'; ctx.fillRect(x - 9, y + 1, 18, 3);
+      text('↑', x + 18, y - 14, 18, '#7dff9a');
+      break;
+    case 'herbs':
+      ctx.fillStyle = '#5cb85c'; ctx.beginPath(); ctx.ellipse(x - 6, y, 8, 15, -0.5, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x + 7, y + 2, 7, 13, 0.6, 0, TAU); ctx.fill();
+      heartPath(x + 10, y - 20, 16); ctx.fillStyle = '#ff4d5e'; ctx.fill();
+      break;
+  }
 }
 
 function heartPath(x, y, s) {
@@ -1062,6 +1255,19 @@ function drawHUD() {
     heartPath(26 + i * 30, 14, 24);
     ctx.fillStyle = i < G.hp ? '#ff4d5e' : 'rgba(255,255,255,0.15)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.stroke();
+  }
+  for (let i = 0; i < G.blocks; i++) { // buckler charges
+    const x = 26 + G.maxHp * 30 + 6 + i * 22, y = 18;
+    ctx.fillStyle = '#8b6b3e'; ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.lineTo(x + 8, y + 9); ctx.quadraticCurveTo(x, y + 20, x, y + 20); ctx.quadraticCurveTo(x - 8, y + 14, x - 8, y + 9); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#c0c6cf'; ctx.lineWidth = 2; ctx.stroke();
+  }
+  if (G.upg.spin) {
+    const ready = G.spinCd <= 0 && G.spinT <= 0, x = 30, y = 64;
+    circle(x, y, 12, 'rgba(0,0,0,0.4)');
+    if (!ready) { ctx.fillStyle = 'rgba(125,255,154,0.35)'; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, 12, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - Math.max(0, G.spinCd) / SPIN_CD[G.upg.spin])); ctx.fill(); }
+    ctx.strokeStyle = ready ? '#7dff9a' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, 7, 0.4, TAU - 0.5); ctx.stroke();
+    if (ready) text('SPIN', x + 18, y, 12, '#7dff9a', 'left');
   }
   text(G.score.toLocaleString(), W - 16, 28, 26, '#ffe27a', 'right');
   text(`LEVEL ${G.level}  ·  Road to ${G.town}`, W / 2, 64, 17, '#f4ece0');
@@ -1134,14 +1340,34 @@ function drawOverlay() {
     if (G.isBoss) wrapText('BOSS: The Bandit King waits on this road!', W / 2, yy, W - 130, 16, '#e7b6ff', 22);
     ctx.globalAlpha = 1;
   } else if (G.state === 'complete') {
-    ctx.fillStyle = 'rgba(10,8,6,0.4)'; ctx.fillRect(0, 0, W, H);
-    panel(340, 300);
-    text(`Arrived at ${G.town}!`, W / 2, 390, 32, '#ffe27a');
-    text(`Bandits slain: ${G.levelKills}`, W / 2, 448, 20, '#f4ece0', 'center', 700);
-    text(`Arrival bonus: +${G.bonus.toLocaleString()}`, W / 2, 482, 20, '#f4ece0', 'center', 700);
-    text(`The traveler rests: +1 ♥`, W / 2, 516, 20, '#ff8a9a', 'center', 700);
-    text(`Score: ${G.score.toLocaleString()}`, W / 2, 560, 24, '#ffe27a');
-    if (G.stateT > 0.8 && blink) text('CLICK TO CONTINUE', W / 2, 610, 22, '#fff');
+    ctx.fillStyle = 'rgba(10,8,6,0.55)'; ctx.fillRect(0, 0, W, H);
+    panel(110, 210);
+    text(`Arrived at ${G.town}!`, W / 2, 152, 30, '#ffe27a');
+    text(`Bandits slain: ${G.levelKills}   ·   Bonus +${G.bonus.toLocaleString()}`, W / 2, 200, 18, '#f4ece0', 'center', 700);
+    text(`The traveler rests: +1 ♥`, W / 2, 234, 18, '#ff8a9a', 'center', 700);
+    text(`Score: ${G.score.toLocaleString()}`, W / 2, 282, 24, '#ffe27a');
+    if (!G.choices.length) {
+      if (G.stateT > 0.8 && blink) text('CLICK TO CONTINUE', W / 2, 420, 22, '#fff');
+    } else {
+      text('CHOOSE AN UPGRADE', W / 2, 348, 22, '#fff');
+      const hov = G.stateT > 0.8 ? cardAt(pointer.x, pointer.y) : -1;
+      G.choices.forEach((u, i) => {
+        const y = CARD_Y + i * CARD_GAP, on = i === hov, lvl = G.upg[u.id];
+        ctx.fillStyle = on ? 'rgba(70,52,28,0.95)' : 'rgba(22,16,12,0.9)';
+        ctx.beginPath(); ctx.roundRect(40, y, W - 80, CARD_H, 16); ctx.fill();
+        ctx.strokeStyle = on ? '#ffe27a' : 'rgba(255,226,122,0.35)'; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
+        drawUpgradeIcon(u.id, 90, y + CARD_H / 2);
+        const title = u.name + (u.max !== Infinity && u.max > 1 ? `  ${'★'.repeat(lvl + 1)}${'☆'.repeat(u.max - lvl - 1)}` : '');
+        text(title, 136, y + 32, 20, on ? '#ffe27a' : '#f4ece0', 'left');
+        ctx.font = '700 15px "Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+        const words = u.desc(lvl).split(' '); let line = '', ly = y + 62;
+        for (const wd of words) {
+          const t2 = line ? line + ' ' + wd : wd;
+          if (ctx.measureText(t2).width > W - 200 && line) { text(line, 136, ly, 15, '#d8cfc0', 'left', 700); line = wd; ly += 21; } else line = t2;
+        }
+        if (line) text(line, 136, ly, 15, '#d8cfc0', 'left', 700);
+      });
+    }
   } else if (G.state === 'gameover') {
     ctx.fillStyle = `rgba(40,0,0,${Math.min(0.5, G.stateT * 0.5)})`; ctx.fillRect(0, 0, W, H);
     if (G.stateT > 0.6) {
@@ -1193,11 +1419,13 @@ function render() {
   const actors = [];
   for (const e of G.enemies) { const w = warp(e.x, e.y); if (!hidden(w)) actors.push({ y: e.y, k: 0, e, w }); }
   actors.push({ y: G.traveler.y, k: 1 });
+  for (let i = 0; i < G.upg.archers; i++) actors.push({ y: G.traveler.y + ALLY_OFF[i][1], k: 4, i });
   collectDecor(actors);
   if (!castleFar) actors.push({ y: castleWorldY(), k: 3 });
   actors.sort((a, b) => a.y - b.y);
   for (const a of actors) {
-    if (a.k === 0) drawFigure(a.e, a.w.x, a.w.y, 0, 1, false, a.w.s);
+    if (a.k === 0) drawFigure(a.e, a.w.x, a.w.y, 0, Math.min(1, a.e.age / 0.5), false, a.w.s);
+    else if (a.k === 4) drawAlly(a.i);
     else if (a.k === 1) drawTraveler();
     else if (a.k === 2) drawDecor(a.kind, a.w.x, a.w.y, a.sc * a.w.s, a.seed);
     else drawCastle();
@@ -1211,17 +1439,27 @@ function render() {
     ctx.fillStyle = '#eee'; ctx.fillRect(-15, -3, 5, 2); ctx.fillRect(-15, 1, 5, 2);
     ctx.restore();
   }
+  for (const a of G.allyArrows) {
+    const w = warp(a.x, a.y), w2 = warp(a.x + a.vx * 0.02, a.y + a.vy * 0.02);
+    ctx.save(); ctx.translate(w.x, w.y); ctx.rotate(Math.atan2(w2.y - w.y, w2.x - w.x)); ctx.scale(w.s, w.s);
+    ctx.strokeStyle = '#6b4423'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(6, 0); ctx.stroke();
+    ctx.fillStyle = '#ccc'; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(4, -3); ctx.lineTo(4, 3); ctx.fill();
+    ctx.fillStyle = '#5fb0ff'; ctx.fillRect(-15, -3, 5, 2); ctx.fillRect(-15, 1, 5, 2);
+    ctx.restore();
+  }
   for (const q of G.parts) {
     ctx.globalAlpha = clamp(q.life / q.max * 1.5, 0, 1);
     ctx.fillStyle = q.color; ctx.fillRect(q.x - q.size / 2, q.y - q.size / 2, q.size, q.size);
   }
   ctx.globalAlpha = 1;
-  drawKnight();
+  const knightOnTop = G.state === 'complete' || G.state === 'title' || G.state === 'gameover';
+  if (!knightOnTop) drawKnight();
   for (const t of G.texts) { ctx.globalAlpha = clamp(t.life / t.max * 2, 0, 1); text(t.s, t.x, t.y, t.size, t.color); }
   ctx.globalAlpha = 1;
   ctx.translate(-shx, -shy);
   drawHUD();
   drawOverlay();
+  if (knightOnTop) drawKnight(); // the knight is your cursor on menus
   ctx.restore();
 }
 
