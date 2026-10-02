@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Floppy Knight</title>
+<meta name="version" content="1.1.0">
 <meta name="description" content="Fling a floppy ragdoll knight to protect a traveler on the road from town to town.">
 <style>
   html, body { margin: 0; height: 100%; background: #14110f; overflow: hidden; overscroll-behavior: none; }
@@ -21,6 +22,7 @@
 // Canvas & scaling (fixed 540x960 logical playfield, letterboxed to any size
 // so it behaves inside an iframe embed of any dimensions)
 // ---------------------------------------------------------------------------
+const VERSION = '1.1.0'; // shown bottom-right; bump on every release
 const W = 540, H = 960;
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
@@ -147,7 +149,8 @@ window.addEventListener('keydown', e => {
 // The floppy knight (Verlet ragdoll + rigidly gripped sword)
 // ---------------------------------------------------------------------------
 const KNIGHT_BASE = 0.62; // starting knight scale (1 = original size)
-const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: KNIGHT_BASE, len: 46, wide: 1, pad: 3 };
+const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: KNIGHT_BASE, len: 46, wide: 1, pad: 3, armed: true, dizzy: 0, dizzyT: 0, spinGrace: 0, prevAng: null };
+const DIZZY_MAX = TAU * 1.75; // continuous same-direction rotation before the knight gets dizzy
 // Knight size & sword come from upgrades. Starts small (KNIGHT_BASE) and grows.
 function buildKnight(x, y) {
   const u = G.upg, k = KNIGHT_BASE * (1 + u.growth * 0.15);
@@ -164,7 +167,6 @@ function buildKnight(x, y) {
     rElb: P(20, 28, 1), rHand: P(30, 14, 1),
     lKnee: P(-8, 78, 1), lFoot: P(-10, 102, 0),
     rKnee: P(8, 78, 1), rFoot: P(10, 102, 0),
-    tip: P(40, 14 - K.len / k, 0.35), // heavy blade end = momentum
   };
   const s = (a, b, l) => ({ a: p[a], b: p[b], l });
   K.p = p;
@@ -173,14 +175,39 @@ function buildKnight(x, y) {
     s('head', 'neck', 18 * k), s('neck', 'pelvis', 36 * k), s('head', 'pelvis', 53 * k),
     s('neck', 'lElb', 22 * k), s('lElb', 'lHand', 20 * k), s('neck', 'rElb', 22 * k), s('rElb', 'rHand', 20 * k),
     s('pelvis', 'lKnee', 24 * k), s('lKnee', 'lFoot', 24 * k), s('pelvis', 'rKnee', 24 * k), s('rKnee', 'rFoot', 24 * k),
-    s('rHand', 'tip', K.len), s('rElb', 'tip', K.len + 17 * k),
   ];
+  K.armed = false; K.dizzy = 0; K.prevAng = null;
+  attachSword();
+}
+// Put the sword in the right hand, pointing along the forearm.
+function attachSword() {
+  const p = K.p, h = p.rHand, e = p.rElb, k = K.k;
+  const dx = h.x - e.x, dy = h.y - e.y, d = Math.hypot(dx, dy) || 1;
+  const tx = h.x + dx / d * K.len, ty = h.y + dy / d * K.len;
+  p.tip = { x: tx, y: ty, px: tx, py: ty, im: 0.35 }; // heavy blade end = momentum
+  K.pts.push(p.tip);
+  K.sticks.push({ a: h, b: p.tip, l: K.len }, { a: e, b: p.tip, l: K.len + 17 * k });
+  K.armed = true; K.trail = []; K.dizzy = 0; K.prevAng = null;
+}
+// Sword flies out of the hand and lands on the road; touch it to pick it back up.
+function disarm(msg) {
+  if (!K.armed) return;
+  const p = K.p, h = p.rHand, t = p.tip;
+  const c = unwarp((h.x + t.x) / 2, (h.y + t.y) / 2);
+  const vx = clamp((t.x - t.px) * 30, -420, 420), vy = clamp((t.y - t.py) * 30, -420, 420);
+  G.sword = { x: c.x, y: c.y, vx, vy, rot: Math.atan2(t.y - h.y, t.x - h.x), vr: rand(9, 15) * (Math.random() < 0.5 ? -1 : 1), z: 30, vz: 260, ground: false, t: 0 };
+  K.pts = K.pts.filter(q => q !== t);
+  K.sticks = K.sticks.filter(st => st.b !== t);
+  K.armed = false; K.trail = []; K.tipSpeed = 0; K.dizzy = 0;
+  sfx.clank(); tone(300, 0.4, 'sawtooth', 0.12, 0.4);
+  addText(msg, h.x, h.y - 20, '#ff9f43', 26, 1.4);
+  G.shake = Math.max(G.shake, 6);
 }
 
 const GRAV = 0.32, DAMP = 0.985;
 const spinCdFor = l => Math.max(0.8, 4 * Math.pow(0.8, l - 1)); // seconds between whirlwinds
 function trySpin() {
-  if (!G.upg.spin || G.spinCd > 0 || G.spinT > 0) return;
+  if (!G.upg.spin || G.spinCd > 0 || G.spinT > 0 || !K.armed) return;
   const p = K.p, h = { x: K.ax, y: K.ay }, t = p.tip;
   const cross = (t.x - h.x) * (t.y - t.py) - (t.y - h.y) * (t.x - t.px);
   G.spinDir = cross < 0 ? -1 : 1;
@@ -207,6 +234,7 @@ function stepKnight() {
   if (spinning) { // whirlwind: drive the body around the grip
     G.spinT -= 1 / 60;
     const h = { x: K.ax, y: K.ay };
+    K.dizzy = 0; K.spinGrace = 0.8; // the whirlwind is a skill, not dizziness
     for (const [q, f, cap] of [[p.tip, 5, 36], [p.rHand, 2.5, 16], [p.rElb, 1.5, 10], [p.lHand, 1.5, 12], [p.head, 1.5, 14], [p.pelvis, 1, 8], [p.lKnee, 0.6, 5], [p.rKnee, 0.6, 5]]) {
       const rx = q.x - h.x, ry = q.y - h.y, rl = Math.hypot(rx, ry) || 1;
       const tx = -ry / rl * G.spinDir, ty = rx / rl * G.spinDir;
@@ -232,10 +260,22 @@ function stepKnight() {
     q.x = clamp(q.x, -m, W + m);
     q.y = clamp(q.y, -m, H + m);
   }
+  K.dizzyT -= 1 / 60; K.spinGrace -= 1 / 60;
+  if (!K.armed) return;
   const t = p.tip;
   K.tipSpeed = Math.hypot(t.x - t.px, t.y - t.py);
   K.trail.unshift({ hx: p.rHand.x, hy: p.rHand.y, tx: t.x, ty: t.y, s: K.tipSpeed });
   if (K.trail.length > 7) K.trail.pop();
+  // Dizziness: the knight's body orbiting the grip the same way round and round winds it up; reversing unwinds it.
+  const ang = Math.atan2(p.head.y - K.ay, p.head.x - K.ax);
+  const fighting = G.state === 'play' || G.state === 'intro' || G.state === 'arrive';
+  if (K.prevAng != null && fighting && !spinning && K.spinGrace <= 0) {
+    const da = ((ang - K.prevAng + Math.PI) % TAU + TAU) % TAU - Math.PI;
+    if (da * K.dizzy < 0) K.dizzy *= 0.25;
+    K.dizzy = (K.dizzy + da) * 0.993;
+    if (Math.abs(K.dizzy) > DIZZY_MAX) { K.dizzyT = 1.8; disarm('DIZZY!'); return; }
+  } else if (!fighting) K.dizzy = 0;
+  K.prevAng = ang;
   G.whooshCd -= 1 / 60;
   if (K.tipSpeed > 17 && G.whooshCd <= 0) { sfx.whoosh(); G.whooshCd = 0.28; }
 }
@@ -257,6 +297,10 @@ function warp(x, y) {
   const dx = (x - W / 2) * hs;
   return { x: W / 2 + dx, y: BASE - R * Math.sin(phi) + DOME * (1 - c) * (dx / (W / 2)) ** 2, s: hs, phi, c };
 }
+function unwarp(X, Y) { // screen -> world (ignores the small dome term)
+  const phi = Math.asin(clamp((BASE - Y) / R, -1, 1)), hs = clamp(1 - 0.45 * (1 - Math.cos(phi)), 0.4, 1);
+  return { x: W / 2 + (X - W / 2) / hs, y: BASE - phi * R };
+}
 const horizonY = X => BASE - R + DOME * ((X - W / 2) / (W / 2)) ** 2;
 const castleWorldY = () => BASE - lerp(CASTLE_FAR, CASTLE_NEAR, G.prog);
 const hidden = w => w.phi > HALF_PI + 0.02;
@@ -277,19 +321,20 @@ const DEFS = {
   runner:  { r: 12, hp: 1, spd: 112, dmg: 1, score: 150,  min: 6,  color: '#3c6e8f', mask: '#1d2a33', unlock: 3 },
   archer:  { r: 14, hp: 1, spd: 55,  dmg: 1, score: 200,  min: 6,  color: '#4f6b2c', mask: '#1f2a12', unlock: 4 },
   brute:   { r: 24, hp: 4, spd: 32,  dmg: 2, score: 400,  min: 7,  color: '#7a3434', mask: '#2a1a1a', unlock: 5 },
-  shield:  { r: 16, hp: 2, spd: 45,  dmg: 1, score: 300,  min: 14, color: '#5a5e66', mask: '#222', unlock: 6 },
+  shield:  { r: 16, hp: 2, spd: 45,  dmg: 1, score: 300,  min: 6,  color: '#5a5e66', mask: '#222', unlock: 6 },
   bomber:  { r: 14, hp: 1, spd: 72,  dmg: 2, score: 250,  min: 6,  color: '#3d3d3d', mask: '#a52a2a', unlock: 7 },
   king:    { r: 38, hp: 22, spd: 22, dmg: 3, score: 3000, min: 9,  color: '#5b2a6b', mask: '#1a1020', unlock: 999 },
 };
 const SPAWN_WEIGHT = { bandit: 10, armored: 5, runner: 5, archer: 3, brute: 2, shield: 3, bomber: 2 };
 const NEW_ENEMY = {
-  2: 'NEW: Armored bandits. Each hit only does 1 damage and knocks them back. Takes 3 hits!',
+  1: 'TIP: Swing back and forth! Spinning in circles makes your knight dizzy and he DROPS his sword.',
+  2: 'NEW: Armored bandits take 3 hits. When they raise their guard (blue glint) back off: hitting it hard knocks your sword away!',
   3: 'NEW: Runners. Fast and twitchy!',
   4: 'NEW: Archers. Swat arrows out of the air!',
   5: 'NEW: Brutes. Tough. Hit them hard and often.',
-  6: 'NEW: Shieldbearers. Only a hard, fast swing breaks through!',
+  6: 'NEW: Shieldbearers turn their shield toward your knight. Hit them from the side or behind!',
   7: 'NEW: Bombers. Kill them away from the traveler. Their blast hurts bandits too!',
-  9: 'NEW: Elite bandits (gold trim) are tougher and worth double.',
+  8: 'NEW: Elite bandits (gold trim) are tougher and worth double.',
 };
 
 // Shop: every upgrade is always for sale; each level costs more gold than the last.
@@ -342,6 +387,8 @@ function startLevel() {
   G.town = townName(G.level); G.biome = BIOMES[(G.level - 1) % BIOMES.length];
   const tr = G.traveler; tr.y = TRAVELER_Y; tr.alpha = 1; tr.hurtT = 0;
   G.prog = 0; G.walk = WALK;
+  if (!K.armed) attachSword(); // the blacksmith returns your sword between towns
+  G.sword = null;
   G.blocks = G.upg.buckler; G.allyArrows = []; G.allyCd = [0.8, 1.3, 1.8];
   G.state = 'intro'; G.stateT = 0;
 }
@@ -425,15 +472,17 @@ const frontY = () => Math.max(-270, castleWorldY() + 40);
 function spawnEnemy(type, x, y) {
   const d = DEFS[type], lv = G.level;
   y = Math.max(y, frontY());
-  const elite = type !== 'king' && lv >= 9 && Math.random() < Math.min(0.5, (lv - 8) * 0.06);
+  const elite = type !== 'king' && lv >= 8 && Math.random() < Math.min(0.55, (lv - 7) * 0.07);
   const e = {
     type, d, x, y, kx: 0, ky: 0, r: d.r * (elite ? 1.12 : 1),
-    hp: d.hp + (elite ? 1 : 0) + (type === 'king' ? lv : 0),
-    spd: d.spd * (1 + Math.min(lv - 1, 20) * 0.045) * rand(0.9, 1.1),
+    hp: d.hp + (elite ? 1 : 0) + (type === 'king' ? 8 + lv * 3 : 0),
+    spd: d.spd * (1 + Math.min(lv - 1, 20) * 0.06) * rand(0.9, 1.1),
     t: rand(0, 10), hitCd: 0, atkCd: 0.6, flash: 0, lunge: 0, stun: 0, age: 0, elite, flee: false, dead: false, phase: rand(0, TAU), fx: 1,
   };
   if (type === 'archer') { e.standY = rand(-140, 380); e.shootT = rand(0.8, 1.8); e.draw = 0; }
-  if (type === 'king') e.summonT = 4;
+  if (type === 'king') { e.summonT = 5; e.ks = 'walk'; e.kt = 2.2; e.next = 1; }
+  if (type === 'armored') { e.guard = 0; e.guardT = rand(1, 3); }
+  e.face = Math.PI / 2; // screen angle the shield faces
   e.maxHp = e.hp;
   G.enemies.push(e);
   return e;
@@ -476,6 +525,16 @@ function updateEnemies(dt) {
       e.x = clamp(e.x, -110, W + 110); e.y = Math.max(e.y, frontY() - 15);
       continue;
     }
+    if (e.type === 'shield' || e.type === 'king') { // turn the shield toward the knight's body
+      const w = warp(e.x, e.y), want = Math.atan2(K.p.pelvis.y - w.y, K.p.pelvis.x - w.x);
+      const da = ((want - e.face + Math.PI) % TAU + TAU) % TAU - Math.PI, turn = (e.type === 'king' ? 2.2 : 3) * dt;
+      e.face += clamp(da, -turn, turn);
+    }
+    if (e.type === 'king' && !e.flee) { kingAI(e, dt); continue; }
+    if (e.type === 'armored' && !e.flee) {
+      if (e.guard > 0) e.guard -= dt;
+      else if ((e.guardT -= dt) <= 0) { e.guard = 1.3; e.guardT = rand(2, 3.4) * Math.max(0.6, 1 - G.level * 0.03); }
+    }
     const dx = tr.x - e.x, dy = tr.y - e.y, dist = Math.hypot(dx, dy) || 1;
     let mvx = 0, mvy = 0;
     if (e.flee) {
@@ -493,19 +552,11 @@ function updateEnemies(dt) {
         const z = Math.sin(e.t * 6 + e.phase) * 0.9;
         mvx = (nx - ny * z) * e.spd; mvy = (ny + nx * z) * e.spd;
       } else { mvx = nx * e.spd; mvy = ny * e.spd; }
+      if (e.guard > 0) mvx = mvy = 0; // braced behind the guard
       if (dist < e.r + 18) {
         mvx = mvy = 0;
         if (e.type === 'bomber') { e.dead = true; explode(e.x, e.y, true); continue; }
         if (e.atkCd <= 0) { e.atkCd = e.type === 'king' ? 1.6 : 1.1; e.lunge = 0.18; hurtTraveler(e.d.dmg); }
-      }
-    }
-    if (e.type === 'king' && !e.flee) {
-      e.summonT -= dt;
-      if (e.summonT <= 0) {
-        e.summonT = Math.max(3.5, 6.5 - G.level * 0.1);
-        for (let i = 0; i < 3; i++) spawnEnemy('bandit', e.x + rand(-60, 60), e.y + rand(-10, 40));
-        const w = warp(e.x, e.y);
-        addText('Get them, lads!', w.x, w.y - 60 * w.s, '#f5d0ff', 18, 1.2);
       }
     }
     if (Math.abs(mvx) > 1) e.fx = mvx > 0 ? 1 : -1;
@@ -533,7 +584,68 @@ function updateEnemies(dt) {
   G.enemies = es.filter(e => !e.dead);
 }
 
+// Bandit King: walk -> (wind-up -> CHARGE -> dizzy) or (knife volley), summons between.
+// He blocks from the front unless charging or dizzy. Hit him hard mid-charge to stagger him.
+function kingAI(e, dt) {
+  const tr = G.traveler, enr = e.hp < e.maxHp * 0.5, w = warp(e.x, e.y);
+  if (enr && !e.enraged) { e.enraged = true; addText('THE KING IS ENRAGED!', W / 2, 380, '#ff6b6b', 28, 2); sfx.boss(); G.shake = 12; }
+  e.kt -= dt; e.moving = false;
+  switch (e.ks) {
+    case 'walk': {
+      const tx = clamp(tr.x + Math.sin(e.t * 0.7) * 150, 60, W - 60), ty = Math.max(frontY() + 20, tr.y - 280);
+      const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy);
+      if (d > 6) { e.x += dx / d * e.spd * 1.8 * dt; e.y += dy / d * e.spd * 1.8 * dt; e.moving = true; e.fx = dx > 0 ? 1 : -1; }
+      if ((e.summonT -= dt) <= 0) {
+        e.summonT = enr ? 5 : 7.5;
+        for (let i = 0; i < 2; i++) spawnEnemy('bandit', e.x + rand(-60, 60), e.y + rand(-10, 40));
+        if (enr) spawnEnemy('armored', e.x + rand(-60, 60), e.y + 30);
+        addText('Get them, lads!', w.x, w.y - 60 * w.s, '#f5d0ff', 18, 1.2);
+      }
+      if (e.kt <= 0) {
+        e.next = (e.next + 1) % 2;
+        if (e.next === 0) { e.ks = 'windup'; e.kt = enr ? 0.75 : 1.0; tone(90, e.kt, 'sawtooth', 0.15, 2); }
+        else { e.ks = 'throw'; e.kt = 0.6; }
+      }
+      break;
+    }
+    case 'windup': // telegraph: aims at the traveler, then locks in
+      if (e.kt > 0.3) { e.tx = tr.x; e.ty = tr.y; }
+      e.fx = e.tx > e.x ? 1 : -1;
+      if (e.kt <= 0) {
+        const dx = e.tx - e.x, dy = e.ty - e.y, d = Math.hypot(dx, dy) || 1, sp = 360 * (enr ? 1.25 : 1);
+        e.cvx = dx / d * sp; e.cvy = dy / d * sp; e.ks = 'charge'; e.kt = 1.6;
+        sfx.whoosh(); noise(0.5, 0.3, 200, 0.7, 'lowpass');
+      }
+      break;
+    case 'charge': {
+      e.x += e.cvx * dt; e.y += e.cvy * dt; e.moving = true;
+      if (Math.hypot(tr.x - e.x, tr.y - e.y) < e.r + 20) {
+        hurtTraveler(2); e.ks = 'dizzy'; e.kt = 1.4; e.kx = -e.cvx * 0.7; e.ky = -e.cvy * 0.7; G.shake = 16;
+      } else if (e.kt <= 0 || (e.tx - e.x) * e.cvx + (e.ty - e.y) * e.cvy < 0) {
+        e.ks = 'dizzy'; e.kt = 2.2; addText('*stumbles*', w.x, w.y - 70 * w.s, '#f5d0ff', 16, 1);
+      }
+      break;
+    }
+    case 'dizzy':
+      if (e.kt <= 0) { e.ks = 'walk'; e.kt = enr ? 1.6 : 2.6; }
+      break;
+    case 'throw':
+      if (e.kt <= 0) {
+        const n = enr ? 7 : 5, base = Math.atan2(tr.y - 10 - e.y, tr.x - e.x);
+        for (let i = 0; i < n; i++) {
+          const a = base + (i - (n - 1) / 2) * 0.16, sp = 250 + G.level * 6;
+          G.arrows.push({ x: e.x, y: e.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, a, life: 6, knife: true });
+        }
+        sfx.shoot(); tone(600, 0.15, 'square', 0.08, 0.5);
+        e.ks = 'walk'; e.kt = enr ? 1.8 : 2.8;
+      }
+      break;
+  }
+  e.x = clamp(e.x, 30, W - 30); e.y = Math.max(e.y, frontY() - 15);
+}
+
 function swordHits() {
+  if (!K.armed) { pickupsAndSword(); return; }
   const p = K.p, h = p.rHand, t = p.tip;
   const hvx = h.x - h.px, hvy = h.y - h.py, tvx = t.x - t.px, tvy = t.y - t.py;
   for (const e of G.enemies) {
@@ -547,6 +659,25 @@ function swordHits() {
     const nx = vx / sp, ny = vy / sp;
     e.hitCd = 0.2;
     const keen = G.upg.keen;
+    // Armored guard: parry. Hard hits into a guard knock the sword out of your hand.
+    if (e.type === 'armored' && e.guard > 0) {
+      bounceSword(nx, ny, sp); sfx.clank(); sparks(sd.x, sd.y, 12);
+      addText('PARRY!', w.x, w.y - (e.r + 16) * w.s, '#8fd3ff', 16, 0.7);
+      if (sp > 18) { disarm('DISARMED!'); return; }
+      continue;
+    }
+    // Shields (shieldbearer, king when not charging/dizzy) block hits that land on their front.
+    const guarded = e.type === 'shield' || (e.type === 'king' && e.ks !== 'dizzy' && e.ks !== 'charge');
+    if (guarded && Math.cos(Math.atan2(sd.y - w.y, sd.x - w.x) - e.face) > 0.2) {
+      bounceSword(nx, ny, sp); sfx.clank(); sparks(sd.x, sd.y, 10);
+      e.kx += nx * 60; e.ky += ny * 60;
+      addText('BLOCKED', w.x, w.y - (e.r + 16) * w.s, '#cfd8e3', 14, 0.6);
+      continue;
+    }
+    if (e.type === 'king' && e.ks === 'charge' && sp >= 12) { // intercepted the charge!
+      e.ks = 'dizzy'; e.kt = 2.6; e.kx = nx * 260; e.ky = ny * 260; G.shake = 14; G.hitstop = 0.08;
+      addText('STAGGERED!', w.x, w.y - 70 * w.s, '#7dff9a', 24, 1.3);
+    }
     if (sp < Math.max(3.5, e.d.min - keen * 1.5)) {
       const mass = e.r / 14;
       e.kx += nx * 90 / mass; e.ky += ny * 90 / mass;
@@ -556,8 +687,30 @@ function swordHits() {
       }
       continue;
     }
-    const dmg = sp >= 24 - keen * 3 ? 3 : sp >= 15 - keen * 2 ? 2 : 1;
+    let dmg = sp >= 24 - keen * 3 ? 3 : sp >= 15 - keen * 2 ? 2 : 1;
+    if (e.type === 'king' && e.ks === 'dizzy') dmg *= 2;
     damageEnemy(e, dmg, nx, ny, sp, sd.x, sd.y);
+  }
+  pickupsAndSword();
+}
+function bounceSword(nx, ny, sp) { // reverse the blade's motion on a block
+  const t = K.p.tip, h = K.p.rHand;
+  t.px = t.x + nx * sp * 0.6; t.py = t.y + ny * sp * 0.6;
+  h.px = h.x + nx * sp * 0.25; h.py = h.y + ny * sp * 0.25;
+  G.shake = Math.max(G.shake, 4);
+}
+function pickupsAndSword() {
+  const sw = G.sword;
+  if (sw && !K.armed && sw.z < 25 && sw.t > 0.35) { // grab the fallen sword with a hand or the head
+    const c = warp(sw.x, sw.y), hl = K.len / 2 * c.s;
+    const ax = c.x - Math.cos(sw.rot) * hl, ay = c.y - Math.sin(sw.rot) * hl, bx = c.x + Math.cos(sw.rot) * hl, by = c.y + Math.sin(sw.rot) * hl;
+    for (const q of [K.p.rHand, K.p.lHand, K.p.head]) {
+      if (segDist(q.x, q.y, ax, ay, bx, by).d < 20 + K.pad) {
+        G.sword = null; attachSword(); sfx.pickup();
+        addText('GOT IT!', q.x, q.y - 24, '#7dff9a', 20, 0.9);
+        break;
+      }
+    }
   }
   // pickups: touch with any part of the knight
   for (const pk of G.pickups) {
@@ -566,6 +719,21 @@ function swordHits() {
     for (const q of K.pts) {
       if (Math.hypot(q.x - w.x, q.y - (w.y - 10 * w.s)) < 24) { collectPickup(pk); break; }
     }
+  }
+}
+function updateSword(dt) {
+  const sw = G.sword;
+  if (!sw) return;
+  sw.t += dt;
+  if (!sw.ground) {
+    sw.x += sw.vx * dt; sw.y += sw.vy * dt; sw.rot += sw.vr * dt;
+    sw.vz -= 900 * dt; sw.z += sw.vz * dt;
+    if (sw.z <= 0) { sw.z = 0; sw.ground = true; sfx.clank(); const c = warp(sw.x, sw.y); sparks(c.x, c.y, 8); }
+  } else sw.y += G.walk * dt; // lies on the road and scrolls away with it
+  if (sw.x < 50 || sw.x > W - 50) { sw.x = clamp(sw.x, 50, W - 50); sw.vx *= -0.4; } // stays in reach
+  if (sw.y > TRAVELER_Y + 120 || sw.y < frontY() - 40) { // lost off-screen: it lands again up ahead
+    Object.assign(sw, { x: rand(140, W - 140), y: lerp(frontY() + 60, TRAVELER_Y - 200, Math.random()), vx: 0, vy: 0, z: 260, vz: 0, ground: false, vr: rand(-10, 10) });
+    addText('Your sword! Grab it!', W / 2, 300, '#ffd34d', 22, 1.6);
   }
 }
 function damageEnemy(e, dmg, nx, ny, sp, hx, hy) {
@@ -580,7 +748,7 @@ function damageEnemy(e, dmg, nx, ny, sp, hx, hy) {
   if (dmg >= 3 && !armor) { const w = warp(e.x, e.y); addText('CRIT!', w.x, w.y - (e.r + 18) * w.s, '#ffcf3f', 18, 0.7); }
   if (e.hp <= 0) killEnemy(e, nx, ny, sp);
   else {
-    e.stun = e.type === 'king' ? 0.08 : armor ? 0.5 : 0.25;
+    e.stun = e.type === 'king' ? 0 : armor ? 0.5 : 0.25;
     if (armor) { sfx.clank(); sfx.hit(); } else sfx.hit();
   }
 }
@@ -698,11 +866,11 @@ function update(dt) {
   if (G.state === 'play') {
     G.levelTime += dt;
     G.spawnT -= dt;
-    const cap = Math.min(10 + G.level * 2, 40);
+    const cap = Math.min(12 + G.level * 3, 50);
     const spawnWindow = !G.isBoss || !G.boss || G.boss.dead;
     if (G.spawnT <= 0 && G.levelTime < G.levelDur - 2) {
       if (G.enemies.length < cap && spawnWindow) spawnRandom();
-      G.spawnT = Math.max(0.33, 1.7 * Math.pow(0.9, G.level - 1)) * rand(0.6, 1.3);
+      G.spawnT = Math.max(0.3, 1.55 * Math.pow(0.88, G.level - 1)) * rand(0.6, 1.3);
     }
     if (G.isBoss && !G.bossSpawned && G.levelTime > G.levelDur * 0.45) {
       G.bossSpawned = true;
@@ -756,13 +924,13 @@ function update(dt) {
   }
   G.allyArrows = G.allyArrows.filter(a => a.life > 0);
 
+  updateSword(dt);
   // arrows
   const p = K.p;
   for (const a of G.arrows) {
     a.x += a.vx * dt; a.y += a.vy * dt; a.life -= dt;
     const aw = warp(a.x, a.y);
-    const sd = segDist(aw.x, aw.y, p.rHand.x, p.rHand.y, p.tip.x, p.tip.y);
-    let blocked = sd.d < 8 + K.pad;
+    let blocked = K.armed && segDist(aw.x, aw.y, p.rHand.x, p.rHand.y, p.tip.x, p.tip.y).d < 8 + K.pad;
     if (!blocked) for (const q of K.pts) if (Math.hypot(q.x - aw.x, q.y - aw.y) < 12) { blocked = true; break; }
     if (blocked) {
       a.life = 0; sparks(aw.x, aw.y, 10); sfx.clank();
@@ -1070,7 +1238,7 @@ function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
   if (rot) ctx.rotate(rot);
   ctx.scale(k * e.fx, k);
   const lunge = !dead && e.lunge > 0 ? 6 : 0;
-  ctx.translate(0, lunge);
+  ctx.translate(e.ks === 'windup' && !dead ? rand(-1.5, 1.5) : 0, lunge);
   const step = !dead && e.moving ? Math.sin(t * 12) * 3 : 0;
   // cape for the king
   if (e.type === 'king') { ctx.fillStyle = '#8e1f2f'; ctx.beginPath(); ctx.moveTo(-12, -10); ctx.lineTo(12, -10); ctx.lineTo(16, 14); ctx.lineTo(-16, 14); ctx.fill(); }
@@ -1115,17 +1283,26 @@ function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
       ctx.fillStyle = '#5a3a20'; ctx.save(); ctx.translate(12, 2); ctx.rotate(-0.5 + (e.lunge > 0 ? 1 : 0));
       ctx.beginPath(); ctx.roundRect(-2, -18, 5, 20, 2); ctx.fill(); ctx.beginPath(); ctx.roundRect(-4, -24, 9, 10, 4); ctx.fill(); ctx.restore();
       break;
-    case 'shield':
-      ctx.fillStyle = '#8b6b3e'; ctx.beginPath(); ctx.roundRect(-11, -6, 22, 20, [3, 3, 11, 11]); ctx.fill();
+    case 'shield': {
+      const fa = e.fx < 0 ? Math.PI - e.face : e.face; // undo the mirror flip
+      ctx.save(); ctx.translate(Math.cos(fa) * 10, -2 + Math.sin(fa) * 9); ctx.rotate(fa);
+      ctx.fillStyle = '#8b6b3e'; ctx.beginPath(); ctx.roundRect(-4, -13, 8, 26, 4); ctx.fill();
       ctx.strokeStyle = '#c0c6cf'; ctx.lineWidth = 2; ctx.stroke();
-      circle(0, 4, 3, '#c0c6cf');
+      circle(1, 0, 2.5, '#c0c6cf');
+      ctx.restore();
       break;
+    }
     case 'armored':
       circle(0, -15, 8, '#9aa4b0'); // great helm over the head
       ctx.fillStyle = '#2a2f36'; ctx.fillRect(-6, -16, 12, 3); ctx.fillRect(-1, -16, 2, 7);
       circle(-9, -5, 4.5, '#b4bdc8'); circle(9, -5, 4.5, '#b4bdc8'); // pauldrons
       ctx.fillStyle = '#5c6570'; circle(-3, 1, 1.2, '#5c6570'); circle(3, 1, 1.2, '#5c6570');
-      ctx.strokeStyle = '#d9dee6'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(11, 2); ctx.lineTo(19, -10); ctx.stroke();
+      ctx.strokeStyle = '#d9dee6'; ctx.lineWidth = 2.5; ctx.beginPath();
+      if (e.guard > 0 && !dead) { // guard up: blade held across the body, blue glint
+        ctx.moveTo(-14, -4); ctx.lineTo(16, -8); ctx.stroke();
+        ctx.strokeStyle = `rgba(120,200,255,${0.5 + 0.4 * Math.sin(t * 20)})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, -4, 17, 0, TAU); ctx.stroke();
+      } else { ctx.moveTo(11, 2); ctx.lineTo(19, -10); ctx.stroke(); }
       break;
     case 'bomber': {
       circle(11, 2, 7, '#1c1c1c'); circle(9, 0, 2, '#555');
@@ -1133,10 +1310,21 @@ function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
       if (!dead) circle(16, -12, 2 + Math.random() * 2, Math.random() < 0.5 ? '#ffd23f' : '#ff7b00');
       break;
     }
-    case 'king':
+    case 'king': {
       ctx.strokeStyle = '#d9dee6'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(10, 4); ctx.lineTo(22, -16); ctx.stroke();
       ctx.strokeStyle = '#d4af37'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(8, -1); ctx.lineTo(14, 3); ctx.stroke();
+      if (!dead && e.ks !== 'dizzy' && e.ks !== 'charge') { // royal shield
+        const fa = e.fx < 0 ? Math.PI - e.face : e.face;
+        ctx.save(); ctx.translate(Math.cos(fa) * 11, -2 + Math.sin(fa) * 10); ctx.rotate(fa);
+        ctx.fillStyle = '#6b2a7a'; ctx.beginPath(); ctx.roundRect(-4, -14, 8, 28, 4); ctx.fill();
+        ctx.strokeStyle = '#d4af37'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.restore();
+      }
+      if (!dead && e.ks === 'dizzy') {
+        for (let i = 0; i < 3; i++) { const a = t * 6 + i * TAU / 3; circle(Math.cos(a) * 11, -30 + Math.sin(a) * 4, 2.2, '#ffe066'); }
+      }
       break;
+    }
   }
   if (!dead && e.flash > 0) { ctx.globalAlpha = alpha * 0.8; circle(0, -6, 14, '#fff'); }
   ctx.restore();
@@ -1164,7 +1352,7 @@ function drawKnight() {
   }
   // sword trail
   const tr = K.trail;
-  if (tr.length > 2 && tr[0].s > 7) {
+  if (K.armed && tr.length > 2 && tr[0].s > 7) {
     for (let i = 0; i < tr.length - 1; i++) {
       const a = tr[i], b = tr[i + 1];
       ctx.fillStyle = `rgba(255,255,255,${0.32 * (1 - i / tr.length) * Math.min(1, a.s / 20)})`;
@@ -1195,10 +1383,27 @@ function drawKnight() {
   ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(-4, -5, 3, 0, TAU); ctx.fill();
   ctx.restore();
   limb([p.neck, p.rElb, p.rHand], 7, STEEL2);
-  // sword
-  const sx = p.tip.x - p.rHand.x, sy = p.tip.y - p.rHand.y, len = Math.hypot(sx, sy) || 1;
+  const dz = Math.abs(K.dizzy) / DIZZY_MAX;
+  if (K.dizzyT > 0) drawDizzy(p.head.x, p.head.y + 18 * k, 1, Math.max(1, k * 1.5));
+  else if (dz > 0.4) {
+    drawDizzy(p.head.x, p.head.y + 18 * k, (dz - 0.4) * 2.5, Math.max(1, k * 1.5));
+    ctx.strokeStyle = dz > 0.8 ? '#ff5050' : '#ffd34d'; ctx.lineWidth = 3; // wind-up meter around the grip
+    ctx.beginPath(); ctx.arc(K.ax, K.ay, 14, -Math.PI / 2, -Math.PI / 2 + TAU * dz); ctx.stroke();
+  }
+  if (K.armed) drawBlade(p.rHand, p.tip, k, 1);
+  circle(p.rHand.x, p.rHand.y, 4.5 * k, OUT);
+}
+
+function drawBlade(h0, t0, k, alpha) { // hilt at h0, point at t0 (screen space)
+  const OUT = '#20252e';
+  const poly = (pts, w, c) => {
+    ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
+  };
+  ctx.globalAlpha = alpha;
+  const sx = t0.x - h0.x, sy = t0.y - h0.y, len = Math.hypot(sx, sy) || 1;
   const ux = sx / len, uy = sy / len, nx = -uy, ny = ux, bw = k * K.wide;
-  const P2 = (a, b) => ({ x: p.rHand.x + ux * a + nx * b, y: p.rHand.y + uy * a + ny * b });
+  const P2 = (a, b) => ({ x: h0.x + ux * a + nx * b, y: h0.y + uy * a + ny * b });
   poly([P2(-13 * k, 0), P2(4 * k, 0)], 5 * k, '#5a3a20');
   circle(P2(-14 * k, 0).x, P2(-14 * k, 0).y, 4 * k, '#d4af37');
   ctx.fillStyle = K.tipSpeed > 6 ? '#ffffff' : '#e3e9f0'; ctx.strokeStyle = OUT; ctx.lineWidth = 2;
@@ -1208,7 +1413,31 @@ function drawKnight() {
   ctx.fill(); ctx.stroke();
   poly([P2(10 * k, 0), P2(len - 18 * bw, 0)], 1.5 * K.wide, '#9aa6b4');
   poly([P2(5 * k, -(9 + 3 * K.wide) * k), P2(5 * k, (9 + 3 * K.wide) * k)], 5 * k, '#d4af37');
-  circle(p.rHand.x, p.rHand.y, 4.5 * k, OUT);
+  ctx.globalAlpha = 1;
+}
+function drawDizzy(x, y, amt, k) { // swirling stars over the head
+  const t = performance.now() / 1000;
+  ctx.globalAlpha = clamp(amt, 0, 1);
+  for (let i = 0; i < 3; i++) {
+    const a = t * 6 + i * TAU / 3;
+    text('★', x + Math.cos(a) * 16 * k, y + Math.sin(a) * 6 * k, 12, '#ffe066');
+  }
+  ctx.globalAlpha = 1;
+}
+function drawGroundSword() {
+  const sw = G.sword;
+  if (!sw) return;
+  const c = warp(sw.x, sw.y), hl = K.len / 2 * c.s;
+  const dx = Math.cos(sw.rot) * hl, dy = Math.sin(sw.rot) * hl * (sw.ground ? Math.max(0.35, c.c) : 1), lift = sw.z * c.s;
+  ctx.globalAlpha = 0.3; ctx.strokeStyle = '#000'; ctx.lineWidth = 6 * c.s * K.wide; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(c.x - dx, c.y - dy + 4); ctx.lineTo(c.x + dx, c.y + dy + 4); ctx.stroke(); ctx.globalAlpha = 1;
+  drawBlade({ x: c.x - dx, y: c.y - dy - lift }, { x: c.x + dx, y: c.y + dy - lift }, K.k * c.s, 1);
+  if (sw.ground) { // beacon so you can find it
+    const pulse = 0.5 + 0.5 * Math.sin(sw.t * 8);
+    ctx.strokeStyle = `rgba(255,211,77,${0.4 + pulse * 0.5})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, hl + 12, (hl + 12) * 0.45, 0, 0, TAU); ctx.stroke();
+    text('GRAB!', c.x, c.y - 26 - pulse * 6, 15, '#ffd34d');
+  }
 }
 
 function drawAlly(i) {
@@ -1317,9 +1546,12 @@ function drawHUD() {
   // boss bar
   const bs = G.boss;
   if (bs && !bs.dead) {
-    text('BANDIT KING', W / 2, 104, 15, '#e7b6ff');
+    text(bs.enraged ? 'BANDIT KING  ·  ENRAGED' : 'BANDIT KING', W / 2, 104, 15, bs.enraged ? '#ff8a8a' : '#e7b6ff');
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(W / 2 - 150, 116, 300, 10);
     ctx.fillStyle = '#b44ad6'; ctx.fillRect(W / 2 - 150, 116, 300 * bs.hp / bs.maxHp, 10);
+  }
+  if (!K.armed && G.sword && (G.state === 'play' || G.state === 'intro' || G.state === 'arrive')) {
+    text(K.dizzyT > 0 ? 'DIZZY! Grab your sword!' : 'DISARMED! Grab your sword!', W / 2, bs && !bs.dead ? 146 : 108, 18, '#ff9f43');
   }
   drawMute();
 }
@@ -1361,12 +1593,13 @@ function drawOverlay() {
     text('FLOPPY', W / 2, 330, 70, '#ffe27a');
     text('KNIGHT', W / 2, 400, 70, '#ffe27a');
     text('Guard the traveler on the road to the next castle.', W / 2, 462, 17, '#f4ece0', 'center', 700);
-    panel(500, 190);
+    panel(500, 222);
     wrapText('You hold the knight by his ankles. Move the mouse to fling him around.', W / 2, 532, W - 120, 17, '#fff', 24);
     wrapText('Swing the sword FAST to slay bandits. Slow taps just nudge.', W / 2, 588, W - 120, 17, '#fff', 24);
-    wrapText('Every town is harder than the last.', W / 2, 644, W - 120, 17, '#ffb35c', 24);
-    if (blink) text('CLICK TO BEGIN', W / 2, 750, 30, '#fff');
-    if (G.best > 0) text(`Best: ${G.best.toLocaleString()}  ·  ${G.bestLevel} towns reached`, W / 2, 800, 15, '#d8cfc0', 'center', 700);
+    wrapText("Don't spin in circles! He gets dizzy and drops his sword.", W / 2, 644, W - 120, 17, '#ffb35c', 24);
+    wrapText('Every town is harder than the last.', W / 2, 692, W - 120, 15, '#d8cfc0', 22);
+    if (blink) text('CLICK TO BEGIN', W / 2, 776, 30, '#fff');
+    if (G.best > 0) text(`Best: ${G.best.toLocaleString()}  ·  ${G.bestLevel} towns reached`, W / 2, 822, 15, '#d8cfc0', 'center', 700);
   } else if (G.state === 'intro') {
     const a = clamp(Math.min(G.stateT * 3, (2.8 - G.stateT) * 2.5), 0, 1);
     ctx.globalAlpha = a;
@@ -1470,6 +1703,13 @@ function render() {
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
   }
   for (const c of G.corpses) { const w = warp(c.x, c.y); if (!hidden(w)) drawFigure(c.e, w.x, w.y, c.rot, clamp(c.life / 0.6, 0, 1), true, w.s); }
+  for (const e of G.enemies) { // king charge telegraph
+    if (e.type !== 'king' || e.ks !== 'windup') continue;
+    const a = warp(e.x, e.y), b = warp(e.tx, e.ty);
+    ctx.strokeStyle = `rgba(255,60,60,${0.35 + 0.35 * Math.sin(performance.now() / 60)})`; ctx.lineWidth = 10 * a.s; ctx.setLineDash([14, 10]);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  drawGroundSword();
   // y-sorted actors, trees and castle (painter's order over the hill)
   const actors = [];
   for (const e of G.enemies) { const w = warp(e.x, e.y); if (!hidden(w)) actors.push({ y: e.y, k: 0, e, w }); }
@@ -1488,6 +1728,12 @@ function render() {
   for (const a of G.arrows) {
     const w = warp(a.x, a.y), w2 = warp(a.x + a.vx * 0.02, a.y + a.vy * 0.02);
     if (hidden(w)) continue;
+    if (a.knife) { // spinning throwing knife
+      ctx.save(); ctx.translate(w.x, w.y); ctx.rotate(performance.now() / 50); ctx.scale(w.s, w.s);
+      ctx.fillStyle = '#e3e9f0'; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-2, -3); ctx.lineTo(-2, 3); ctx.fill();
+      ctx.fillStyle = '#6b2a7a'; ctx.fillRect(-9, -2, 7, 4);
+      ctx.restore(); continue;
+    }
     ctx.save(); ctx.translate(w.x, w.y); ctx.rotate(Math.atan2(w2.y - w.y, w2.x - w.x)); ctx.scale(w.s, w.s);
     ctx.strokeStyle = '#6b4423'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(6, 0); ctx.stroke();
     ctx.fillStyle = '#ccc'; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(4, -3); ctx.lineTo(4, 3); ctx.fill();
@@ -1515,6 +1761,7 @@ function render() {
   drawHUD();
   drawOverlay();
   if (knightOnTop) drawKnight(); // the knight is your cursor on menus
+  text('v' + VERSION, W - 6, H - 8, 11, 'rgba(255,255,255,0.75)', 'right', 700);
   ctx.restore();
 }
 
@@ -1536,7 +1783,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Small debug/QA hook (harmless in production)
-window.__floppyKnight = { G, K, pointer, step: n => { for (let i = 0; i < n; i++) update(STEP); render(); } };
+window.__floppyKnight = { G, K, pointer, step: n => { for (let i = 0; i < n; i++) update(STEP); render(); }, rearm: () => { if (!K.armed) { G.sword = null; attachSword(); } } };
 })();
 </script>
 </body>

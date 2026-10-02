@@ -8,6 +8,12 @@ walking from town to town. Each level ends at a castle; levels go on forever and
 - `public/index.html` — the entire game (no build step, no dependencies)
 - `wrangler.jsonc` — Cloudflare Pages config (`pages_build_output_dir: ./public`)
 
+## Versioning
+
+The version shows in the bottom-right corner of the game. To release a new version, bump
+`VERSION` (and the matching `<meta name="version">`) at the top of `public/index.html`,
+commit, and tag it: `git tag v1.2.0 && git push --tags`.
+
 ## Run locally
 
     python3 -m http.server 8000 -d public
