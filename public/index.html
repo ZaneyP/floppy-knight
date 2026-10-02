@@ -152,7 +152,7 @@ const K = { p: null, pts: [], sticks: [], trail: [], tipSpeed: 0, k: KNIGHT_BASE
 function buildKnight(x, y) {
   const u = G.upg, k = KNIGHT_BASE * (1 + u.growth * 0.15);
   K.k = k;
-  K.len = (74 + u.length * 17) * k;   // blade reach
+  K.len = (74 + u.length * 18 + u.length * u.length * 1.5) * k; // blade reach (accelerates: absurd swords are the goal)
   K.wide = 1 + u.width * 0.45;        // blade thickness (visual)
   K.pad = 3 + u.width * 5;            // extra hit tolerance
   // Held by the ankles: (x, y) is the grip between the feet, body hangs upside down below it.
@@ -178,13 +178,13 @@ function buildKnight(x, y) {
 }
 
 const GRAV = 0.32, DAMP = 0.985;
-const SPIN_CD = [0, 4, 3, 2.2];
+const spinCdFor = l => Math.max(0.8, 4 * Math.pow(0.8, l - 1)); // seconds between whirlwinds
 function trySpin() {
   if (!G.upg.spin || G.spinCd > 0 || G.spinT > 0) return;
   const p = K.p, h = { x: K.ax, y: K.ay }, t = p.tip;
   const cross = (t.x - h.x) * (t.y - t.py) - (t.y - h.y) * (t.x - t.px);
   G.spinDir = cross < 0 ? -1 : 1;
-  G.spinT = 0.75; G.spinCd = SPIN_CD[G.upg.spin];
+  G.spinT = 0.75; G.spinCd = spinCdFor(G.upg.spin);
   sfx.whoosh(); tone(220, 0.5, 'triangle', 0.12, 3);
 }
 function stepKnight() {
@@ -228,8 +228,9 @@ function stepKnight() {
     }
   }
   for (const q of K.pts) {
-    q.x = clamp(q.x, -60, W + 60);
-    q.y = clamp(q.y, -80, H + 60);
+    const m = 60 + K.len + 100 * K.k; // big knights/swords may reach far off-screen
+    q.x = clamp(q.x, -m, W + m);
+    q.y = clamp(q.y, -m, H + m);
   }
   const t = p.tip;
   K.tipSpeed = Math.hypot(t.x - t.px, t.y - t.py);
@@ -292,21 +293,22 @@ const NEW_ENEMY = {
 };
 
 // Shop: every upgrade is always for sale; each level costs more gold than the last.
+// cost(level) = base * mult^level, rounded to 5. max: Infinity = scales forever.
 const UPGRADES = [
-  { id: 'spin', name: 'Whirlwind', costs: [60, 120, 200], desc: l => l === 0 ? 'Unlock: CLICK to spin into a tornado.' : `Spin recharges faster (${SPIN_CD[l]}s → ${SPIN_CD[l + 1]}s).` },
-  { id: 'length', name: 'Longer Blade', costs: [40, 80, 140, 220], desc: () => 'More reach, bigger arcs, faster tip.' },
-  { id: 'width', name: 'Broadsword', costs: [40, 80, 140, 220], desc: () => 'Wider blade. Easier to hit and block.' },
-  { id: 'archers', name: 'Hired Archer', costs: [90, 180, 300], desc: l => l === 0 ? 'An archer escorts the traveler.' : 'Hire another escort archer.' },
-  { id: 'keen', name: 'Keen Edge', costs: [50, 110, 190], desc: () => 'Slower swings cut. Crits come easier.' },
-  { id: 'vigor', name: 'Sturdy Boots', costs: [60, 120, 200], desc: () => '+1 max heart for the traveler.' },
-  { id: 'buckler', name: 'Buckler', costs: [50, 100, 170], desc: l => `Block the first ${l + 1} hit${l ? 's' : ''} on every road.` },
-  { id: 'growth', name: "Giant's Draught", costs: [70, 150, 250], desc: () => 'Your knight grows 15% bigger.' },
-  { id: 'herbs', name: 'Healing Herbs', heal: true, desc: () => 'Fully heal the traveler (15g per heart).' },
+  { id: 'spin', name: 'Whirlwind', base: 70, mult: 1.6, max: 8, desc: l => l === 0 ? 'Unlock: CLICK to spin into a tornado.' : `Spin recharges faster (${spinCdFor(l).toFixed(1)}s → ${spinCdFor(l + 1).toFixed(1)}s).` },
+  { id: 'length', name: 'Longer Blade', base: 45, mult: 1.45, max: Infinity, desc: l => l < 6 ? 'More reach, bigger arcs, faster tip.' : l < 12 ? 'Is that sword compensating for something?' : 'This is no longer a reasonable sword.' },
+  { id: 'width', name: 'Broadsword', base: 45, mult: 1.45, max: Infinity, desc: l => l < 6 ? 'Wider blade. Easier to hit and block.' : 'It is basically a door now.' },
+  { id: 'archers', name: 'Hired Archer', base: 100, mult: 1.7, max: 8, desc: l => l === 0 ? 'An archer escorts the traveler.' : 'Hire another escort archer.' },
+  { id: 'keen', name: 'Keen Edge', base: 55, mult: 1.7, max: 5, desc: () => 'Slower swings cut. Crits come easier.' },
+  { id: 'vigor', name: 'Sturdy Boots', base: 70, mult: 1.5, max: 10, desc: () => '+1 max heart for the traveler.' },
+  { id: 'buckler', name: 'Buckler', base: 60, mult: 1.6, max: 5, desc: l => `Block the first ${l + 1} hit${l ? 's' : ''} on every road.` },
+  { id: 'growth', name: "Giant's Draught", base: 80, mult: 1.5, max: Infinity, desc: l => l < 5 ? 'Your knight grows 15% bigger.' : 'He is getting concerningly large.' },
+  { id: 'herbs', name: 'Healing Herbs', heal: true, desc: () => 'Fully heal the traveler (18g per heart).' },
 ];
-const upgMaxed = u => u.heal ? G.hp >= G.maxHp : G.upg[u.id] >= u.costs.length;
-const upgCost = u => u.heal ? (G.maxHp - G.hp) * 15 : u.costs[G.upg[u.id]];
+const upgMaxed = u => u.heal ? G.hp >= G.maxHp : G.upg[u.id] >= u.max;
+const upgCost = u => u.heal ? (G.maxHp - G.hp) * 18 : Math.round(u.base * Math.pow(u.mult, G.upg[u.id]) / 5) * 5;
 const freshUpg = () => ({ spin: 0, length: 0, width: 0, archers: 0, keen: 0, vigor: 0, buckler: 0, growth: 0, herbs: 0 });
-const ALLY_OFF = [[-62, 16], [62, 16], [0, 64]];
+const ALLY_OFF = [[-62, 16], [62, 16], [0, 64], [-112, 44], [112, 44], [-64, 96], [64, 96], [0, 128]];
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -353,7 +355,7 @@ function beginArrive() {
 function completeLevel() {
   G.state = 'complete'; G.stateT = 0;
   G.score += G.bonus;
-  G.goldBonus = 20 + G.level * 5;
+  G.goldBonus = 15 + G.level * 4;
   G.gold += G.goldBonus;
   G.hp = Math.min(G.maxHp, G.hp + 1);
   G.shopMsg = null;
@@ -589,7 +591,7 @@ function killEnemy(e, nx, ny, sp) {
   const mult = 1 + Math.floor(G.combo / 5);
   const pts = e.d.score * (e.elite ? 2 : 1) * mult;
   G.score += pts;
-  G.gold += Math.round(e.d.score * (e.elite ? 2 : 1) / 20);
+  G.gold += Math.round(e.d.score * (e.elite ? 2 : 1) / 25);
   const w = warp(e.x, e.y);
   addText('+' + pts, w.x, w.y - 22 * w.s, '#ffe066', 16, 0.9);
   if (G.combo >= 5 && G.combo % 5 === 0) addText(G.combo + ' COMBO!  x' + mult, W / 2, 330, '#ff9f43', 30, 1.3);
@@ -1279,20 +1281,21 @@ function heartPath(x, y, s) {
 function drawHUD() {
   if (G.state === 'title') { drawMute(); return; }
   ctx.fillStyle = 'rgba(15,10,8,0.45)'; ctx.fillRect(0, 0, W, 84);
+  const hsp = Math.min(30, 290 / G.maxHp), hsz = Math.min(24, hsp * 0.85); // squeeze hearts as max grows
   for (let i = 0; i < G.maxHp; i++) {
-    heartPath(26 + i * 30, 14, 24);
+    heartPath(26 + i * hsp, 14, hsz);
     ctx.fillStyle = i < G.hp ? '#ff4d5e' : 'rgba(255,255,255,0.15)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.stroke();
   }
   for (let i = 0; i < G.blocks; i++) { // buckler charges
-    const x = 26 + G.maxHp * 30 + 6 + i * 22, y = 18;
+    const x = 26 + G.maxHp * hsp + 6 + i * 22, y = 18;
     ctx.fillStyle = '#8b6b3e'; ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y); ctx.lineTo(x + 8, y + 9); ctx.quadraticCurveTo(x, y + 20, x, y + 20); ctx.quadraticCurveTo(x - 8, y + 14, x - 8, y + 9); ctx.closePath(); ctx.fill();
     ctx.strokeStyle = '#c0c6cf'; ctx.lineWidth = 2; ctx.stroke();
   }
   if (G.upg.spin) {
     const ready = G.spinCd <= 0 && G.spinT <= 0, x = 30, y = 64;
     circle(x, y, 12, 'rgba(0,0,0,0.4)');
-    if (!ready) { ctx.fillStyle = 'rgba(125,255,154,0.35)'; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, 12, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - Math.max(0, G.spinCd) / SPIN_CD[G.upg.spin])); ctx.fill(); }
+    if (!ready) { ctx.fillStyle = 'rgba(125,255,154,0.35)'; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, 12, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - Math.max(0, G.spinCd) / spinCdFor(G.upg.spin))); ctx.fill(); }
     ctx.strokeStyle = ready ? '#7dff9a' : 'rgba(255,255,255,0.4)'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.arc(x, y, 7, 0.4, TAU - 0.5); ctx.stroke();
     if (ready) text('SPIN', x + 18, y, 12, '#7dff9a', 'left');
@@ -1394,9 +1397,13 @@ function drawOverlay() {
       if (!u.heal) { // level pips
         ctx.font = '900 17px "Trebuchet MS", "Segoe UI", system-ui, sans-serif';
         const px = 100 + ctx.measureText(u.name).width + 12;
-        for (let j = 0; j < u.costs.length; j++) {
-          ctx.fillStyle = j < lvl ? '#ffd34d' : 'rgba(255,255,255,0.18)';
-          ctx.beginPath(); ctx.roundRect(px + j * 15, y + 14, 11, 11, 3); ctx.fill();
+        if (u.max === Infinity) text(`Lv ${lvl}`, px, y + 20, 14, lvl ? '#ffd34d' : 'rgba(255,255,255,0.4)', 'left');
+        else {
+          const ps = u.max > 5 ? 11 : 15, pz = u.max > 5 ? 8 : 11;
+          for (let j = 0; j < u.max; j++) {
+            ctx.fillStyle = j < lvl ? '#ffd34d' : 'rgba(255,255,255,0.18)';
+            ctx.beginPath(); ctx.roundRect(px + j * ps, y + 20 - pz / 2, pz, pz, 2); ctx.fill();
+          }
         }
       }
       const msg = G.shopMsg && G.shopMsg.i === i ? G.shopMsg : null;
