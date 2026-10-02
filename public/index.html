@@ -213,12 +213,27 @@ function stepKnight() {
 // ---------------------------------------------------------------------------
 const WALK = 60; // px/s the ground scrolls
 const TRAVELER_Y = 800;
+
+// "Rolling log" world: the ground wraps over a big cylinder (like Animal Crossing).
+// Gameplay runs in flat world coords; warp() maps world -> screen for drawing and sword hits.
+const BASE = H + 40, R = 840, DOME = 70, HALF_PI = Math.PI / 2;
+const HORIZON_WY = BASE - R * HALF_PI;            // world y that sits on the horizon
+const CASTLE_FAR = R * (HALF_PI + 0.3), CASTLE_NEAR = 730;
+function warp(x, y) {
+  const phi = (BASE - y) / R, c = Math.cos(phi);
+  const hs = clamp(1 - 0.45 * (1 - c), 0.4, 1);
+  const dx = (x - W / 2) * hs;
+  return { x: W / 2 + dx, y: BASE - R * Math.sin(phi) + DOME * (1 - c) * (dx / (W / 2)) ** 2, s: hs, phi, c };
+}
+const horizonY = X => BASE - R + DOME * ((X - W / 2) / (W / 2)) ** 2;
+const castleWorldY = () => BASE - lerp(CASTLE_FAR, CASTLE_NEAR, G.prog);
+const hidden = w => w.phi > HALF_PI + 0.02;
 const BIOMES = [
-  { g1: '#5f9e4a', g2: '#548f40', g3: '#72b257', road: '#c8a46b', edge: '#a3804c', tree: '#2f6e35', tree2: '#46913f', roof: '#c0392b', stone: '#a7a196', decor: ['tree', 'tree', 'bush', 'rock', 'flowers', 'flowers'] },
-  { g1: '#8b9a45', g2: '#7c8a3a', g3: '#a0b055', road: '#b98d5a', edge: '#94693d', tree: '#c2651f', tree2: '#e0a030', roof: '#2c5f8a', stone: '#a0998e', decor: ['tree', 'tree', 'bush', 'rock', 'leaves', 'leaves'] },
-  { g1: '#dcbd78', g2: '#cdab65', g3: '#e8cd8e', road: '#b98e5a', edge: '#9a7244', tree: '#4f8a3a', tree2: '#6aa34d', roof: '#b5651d', stone: '#cdb88f', decor: ['cactus', 'rock', 'rock', 'bones', 'shrub', 'cactus'] },
-  { g1: '#e6eef3', g2: '#d5e1e9', g3: '#f7fbfd', road: '#b5ada0', edge: '#918879', tree: '#2d5a46', tree2: '#3e7459', roof: '#6b3fa0', stone: '#8f98a3', decor: ['pine', 'pine', 'rock', 'drift', 'pine'] },
-  { g1: '#4d6b4a', g2: '#425d3f', g3: '#5b7c57', road: '#8a7a5e', edge: '#685a42', tree: '#26402c', tree2: '#35583b', roof: '#46466a', stone: '#7d8083', decor: ['pine', 'rock', 'bush', 'mushroom', 'tree'] },
+  { g1: '#5f9e4a', g2: '#548f40', g3: '#72b257', road: '#c8a46b', edge: '#a3804c', tree: '#2f6e35', tree2: '#46913f', sky1: '#79c2f0', sky2: '#dcf1fb', roof: '#c0392b', stone: '#a7a196', decor: ['tree', 'tree', 'bush', 'rock', 'flowers', 'flowers'] },
+  { g1: '#8b9a45', g2: '#7c8a3a', g3: '#a0b055', road: '#b98d5a', edge: '#94693d', tree: '#c2651f', tree2: '#e0a030', sky1: '#8dbde0', sky2: '#f4e3c6', roof: '#2c5f8a', stone: '#a0998e', decor: ['tree', 'tree', 'bush', 'rock', 'leaves', 'leaves'] },
+  { g1: '#dcbd78', g2: '#cdab65', g3: '#e8cd8e', road: '#b98e5a', edge: '#9a7244', tree: '#4f8a3a', tree2: '#6aa34d', sky1: '#6cb2e8', sky2: '#f7e8c4', roof: '#b5651d', stone: '#cdb88f', decor: ['cactus', 'rock', 'rock', 'bones', 'shrub', 'cactus'] },
+  { g1: '#e6eef3', g2: '#d5e1e9', g3: '#f7fbfd', road: '#b5ada0', edge: '#918879', tree: '#2d5a46', tree2: '#3e7459', sky1: '#a6c4dc', sky2: '#eef4f8', roof: '#6b3fa0', stone: '#8f98a3', decor: ['pine', 'pine', 'rock', 'drift', 'pine'] },
+  { g1: '#4d6b4a', g2: '#425d3f', g3: '#5b7c57', road: '#8a7a5e', edge: '#685a42', tree: '#26402c', tree2: '#35583b', sky1: '#6a7c98', sky2: '#cdc5d2', roof: '#46466a', stone: '#7d8083', decor: ['pine', 'rock', 'bush', 'mushroom', 'tree'] },
 ];
 const PRE = ['Ash', 'Bram', 'Kings', 'Wolf', 'Raven', 'Stone', 'Thorn', 'Elder', 'Mist', 'Iron', 'Oak', 'Gold', 'Frost', 'Dun', 'Black', 'High', 'Red', 'Willow', 'Storm', 'Hollow'];
 const SUF = ['ford', 'wick', 'haven', 'hold', 'moor', 'gate', 'vale', 'reach', 'keep', 'bury', 'helm', 'spire', 'watch', 'fell'];
@@ -316,7 +331,7 @@ function spawnEnemy(type, x, y) {
     spd: d.spd * (1 + Math.min(lv - 1, 20) * 0.045) * rand(0.9, 1.1),
     t: rand(0, 10), hitCd: 0, atkCd: 0.6, flash: 0, lunge: 0, elite, flee: false, dead: false, phase: rand(0, TAU), fx: 1,
   };
-  if (type === 'archer') { e.standY = rand(130, 420); e.shootT = rand(0.8, 1.8); e.draw = 0; }
+  if (type === 'archer') { e.standY = rand(-140, 380); e.shootT = rand(0.8, 1.8); e.draw = 0; }
   if (type === 'king') e.summonT = 4;
   e.maxHp = e.hp;
   G.enemies.push(e);
@@ -329,9 +344,9 @@ function spawnRandom() {
   for (const [k, w] of pool) { if ((r -= w) < 0) { type = k; break; } }
   const side = Math.random();
   let x, y;
-  if (type === 'archer' || side < 0.64) { x = rand(30, W - 30); y = -30; }
-  else if (side < 0.82) { x = -30; y = rand(60, 600); }
-  else { x = W + 30; y = rand(60, 600); }
+  if (type === 'archer' || side < 0.64) { x = rand(30, W - 30); y = -270; }
+  else if (side < 0.82) { x = -100; y = rand(-150, 600); }
+  else { x = W + 100; y = rand(-150, 600); }
   // occasional pack of plain bandits
   if (lv >= 3 && type === 'bandit' && Math.random() < 0.25) {
     for (let i = 0; i < 2; i++) spawnEnemy('bandit', clamp(x + rand(-50, 50), 20, W - 20), y - rand(20, 60));
@@ -358,7 +373,7 @@ function updateEnemies(dt) {
     let mvx = 0, mvy = 0;
     if (e.flee) {
       mvx = (e.x < W / 2 ? -1 : 1) * e.spd * 2.4; mvy = -e.spd * 0.6;
-      if (e.x < -80 || e.x > W + 80 || e.y < -100) e.dead = true;
+      if (e.x < -160 || e.x > W + 160 || e.y < -400) e.dead = true;
     } else if (e.type === 'archer') {
       if (e.y < e.standY) mvy = e.spd;
       else {
@@ -382,13 +397,14 @@ function updateEnemies(dt) {
       if (e.summonT <= 0) {
         e.summonT = Math.max(3.5, 6.5 - G.level * 0.1);
         for (let i = 0; i < 3; i++) spawnEnemy('bandit', e.x + rand(-60, 60), e.y + rand(-10, 40));
-        addText('Get them, lads!', e.x, e.y - 60, '#f5d0ff', 18, 1.2);
+        const w = warp(e.x, e.y);
+        addText('Get them, lads!', w.x, w.y - 60 * w.s, '#f5d0ff', 18, 1.2);
       }
     }
     if (Math.abs(mvx) > 1) e.fx = mvx > 0 ? 1 : -1;
     e.x += mvx * dt; e.y += mvy * dt;
     e.moving = Math.hypot(mvx, mvy) > 1;
-    if (!e.flee) { e.x = clamp(e.x, -40, W + 40); e.y = Math.max(e.y, -60); }
+    if (!e.flee) { e.x = clamp(e.x, -110, W + 110); e.y = Math.max(e.y, -380); }
   }
   // separation
   const es = G.enemies;
@@ -415,8 +431,10 @@ function swordHits() {
   const hvx = h.x - h.px, hvy = h.y - h.py, tvx = t.x - t.px, tvy = t.y - t.py;
   for (const e of G.enemies) {
     if (e.dead || e.hitCd > 0) continue;
-    const sd = segDist(e.x, e.y - 4, h.x, h.y, t.x, t.y);
-    if (sd.d > e.r + 6) continue;
+    const w = warp(e.x, e.y);
+    if (hidden(w)) continue;
+    const sd = segDist(w.x, w.y - 4 * w.s, h.x, h.y, t.x, t.y);
+    if (sd.d > e.r * w.s + 6) continue;
     const vx = lerp(hvx, tvx, sd.t), vy = lerp(hvy, tvy, sd.t), sp = Math.hypot(vx, vy);
     if (sp < 3.5) continue;
     const nx = vx / sp, ny = vy / sp;
@@ -426,7 +444,7 @@ function swordHits() {
       e.kx += nx * 90 / mass; e.ky += ny * 90 / mass;
       if (e.type === 'shield' || e.type === 'king') {
         sfx.clank(); sparks(sd.x, sd.y, 8);
-        addText('TOO WEAK', e.x, e.y - e.r - 16, '#cfd8e3', 14, 0.6);
+        addText('TOO WEAK', w.x, w.y - (e.r + 16) * w.s, '#cfd8e3', 14, 0.6);
       }
       continue;
     }
@@ -436,8 +454,9 @@ function swordHits() {
   // pickups: touch with any part of the knight
   for (const pk of G.pickups) {
     if (pk.taken) continue;
+    const w = warp(pk.x, pk.y);
     for (const q of K.pts) {
-      if (Math.hypot(q.x - pk.x, q.y - pk.y) < 24) { collectPickup(pk); break; }
+      if (Math.hypot(q.x - w.x, q.y - (w.y - 10 * w.s)) < 24) { collectPickup(pk); break; }
     }
   }
 }
@@ -448,7 +467,7 @@ function damageEnemy(e, dmg, nx, ny, sp, hx, hy) {
   e.kx += nx * kb; e.ky += ny * kb;
   burst(hx, hy, '#fff3c4', 6 + dmg * 3, 260, 3);
   G.shake = Math.max(G.shake, 2 + dmg * 2);
-  if (dmg >= 3) addText('CRIT!', e.x, e.y - e.r - 18, '#ffcf3f', 18, 0.7);
+  if (dmg >= 3) { const w = warp(e.x, e.y); addText('CRIT!', w.x, w.y - (e.r + 18) * w.s, '#ffcf3f', 18, 0.7); }
   if (e.hp <= 0) killEnemy(e, nx, ny, sp);
   else sfx.hit();
 }
@@ -459,18 +478,19 @@ function killEnemy(e, nx, ny, sp) {
   const mult = 1 + Math.floor(G.combo / 5);
   const pts = e.d.score * (e.elite ? 2 : 1) * mult;
   G.score += pts;
-  addText('+' + pts, e.x, e.y - 22, '#ffe066', 16, 0.9);
+  const w = warp(e.x, e.y);
+  addText('+' + pts, w.x, w.y - 22 * w.s, '#ffe066', 16, 0.9);
   if (G.combo >= 5 && G.combo % 5 === 0) addText(G.combo + ' COMBO!  x' + mult, W / 2, 330, '#ff9f43', 30, 1.3);
   const fling = 220 + sp * 22;
   G.corpses.push({ e, x: e.x, y: e.y, vx: nx * fling, vy: ny * fling, rot: 0, vr: rand(-14, 14), life: 1.5 });
-  burst(e.x, e.y, e.d.color, 14, 240, 4);
+  burst(w.x, w.y, e.d.color, 14, 240, 4);
   sfx.kill();
   G.shake = Math.max(G.shake, 6);
   G.hitstop = 0.035;
   if (e.type === 'bomber') explode(e.x, e.y, false);
   if (e.type === 'king') {
     G.shake = 22; G.hitstop = 0.15;
-    burst(e.x, e.y, '#d4af37', 40, 380, 6);
+    burst(w.x, w.y, '#d4af37', 40, 380, 6);
     sfx.boom();
     addText('BANDIT KING DEFEATED!', W / 2, 380, '#ffd84a', 30, 2.2);
     for (const o of G.enemies) if (!o.dead) o.flee = true; // the gang scatters
@@ -482,8 +502,9 @@ function explode(x, y, atTraveler) {
   sfx.boom();
   G.shake = Math.max(G.shake, 14);
   G.blasts.push({ x, y, t: 0 });
-  burst(x, y, '#ff9d2e', 26, 340, 6);
-  burst(x, y, '#555', 14, 200, 7);
+  const bw = warp(x, y);
+  burst(bw.x, bw.y, '#ff9d2e', 26, 340, 6);
+  burst(bw.x, bw.y, '#555', 14, 200, 7);
   if (atTraveler) hurtTraveler(2, true);
   else if (Math.hypot(G.traveler.x - x, G.traveler.y - y) < 75) hurtTraveler(1, true);
   for (const o of G.enemies) {
@@ -491,7 +512,8 @@ function explode(x, y, atTraveler) {
     const d = Math.hypot(o.x - x, o.y - y);
     if (d < 95) {
       const nx = (o.x - x) / (d || 1), ny = (o.y - y) / (d || 1);
-      damageEnemy(o, 3, nx, ny, 20, o.x, o.y);
+      const ow = warp(o.x, o.y);
+      damageEnemy(o, 3, nx, ny, 20, ow.x, ow.y);
     }
   }
 }
@@ -503,15 +525,17 @@ function hurtTraveler(n, force) {
   G.shake = Math.max(G.shake, 10);
   G.combo = 0;
   sfx.hurt();
-  addText('-' + n + ' ♥', tr.x, tr.y - 56, '#ff4d4d', 24, 1);
+  const tw = warp(tr.x, tr.y);
+  addText('-' + n + ' ♥', tw.x, tw.y - 56 * tw.s, '#ff4d4d', 24, 1);
   if (G.hp <= 0) { G.hp = 0; gameOver(); }
 }
 function collectPickup(pk) {
   pk.taken = true;
   G.hp = Math.min(G.maxHp, G.hp + 1);
   sfx.pickup();
-  addText('+1 ♥', pk.x, pk.y - 20, '#ff6b81', 20, 1);
-  burst(pk.x, pk.y, '#ff6b81', 12, 160, 3);
+  const w = warp(pk.x, pk.y);
+  addText('+1 ♥', w.x, w.y - 20, '#ff6b81', 20, 1);
+  burst(w.x, w.y, '#ff6b81', 12, 160, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -561,7 +585,7 @@ function update(dt) {
     }
     if (G.isBoss && !G.bossSpawned && G.levelTime > G.levelDur * 0.45) {
       G.bossSpawned = true;
-      G.boss = spawnEnemy('king', W / 2, -60);
+      G.boss = spawnEnemy('king', W / 2, -300);
       addText('THE BANDIT KING!', W / 2, 360, '#e7b6ff', 34, 2);
       sfx.boss();
       G.shake = 12;
@@ -570,7 +594,7 @@ function update(dt) {
   }
 
   if (G.state === 'arrive' && G.walk <= 0) {
-    const gateY = castleGateY();
+    const gateY = castleWorldY();
     if (tr.y > gateY + 8) { tr.y -= 130 * dt; tr.anim += dt * 8; }
     if (tr.y < gateY + 50) tr.alpha = Math.max(0, tr.alpha - dt * 2.2);
     if (tr.alpha <= 0) completeLevel();
@@ -585,16 +609,17 @@ function update(dt) {
   const p = K.p;
   for (const a of G.arrows) {
     a.x += a.vx * dt; a.y += a.vy * dt; a.life -= dt;
-    const sd = segDist(a.x, a.y, p.rHand.x, p.rHand.y, p.tip.x, p.tip.y);
+    const aw = warp(a.x, a.y);
+    const sd = segDist(aw.x, aw.y, p.rHand.x, p.rHand.y, p.tip.x, p.tip.y);
     let blocked = sd.d < 11;
-    if (!blocked) for (const q of K.pts) if (Math.hypot(q.x - a.x, q.y - a.y) < 12) { blocked = true; break; }
+    if (!blocked) for (const q of K.pts) if (Math.hypot(q.x - aw.x, q.y - aw.y) < 12) { blocked = true; break; }
     if (blocked) {
-      a.life = 0; sparks(a.x, a.y, 10); sfx.clank();
-      G.score += 25; addText('+25', a.x, a.y - 12, '#cfe8ff', 13, 0.6);
+      a.life = 0; sparks(aw.x, aw.y, 10); sfx.clank();
+      G.score += 25; addText('+25', aw.x, aw.y - 12, '#cfe8ff', 13, 0.6);
       continue;
     }
     if (Math.hypot(a.x - tr.x, a.y - (tr.y - 12)) < 18 && G.state === 'play') { a.life = 0; hurtTraveler(1); }
-    if (a.x < -40 || a.x > W + 40 || a.y > H + 40 || a.y < -60) a.life = 0;
+    if (a.x < -160 || a.x > W + 160 || a.y > H + 40 || a.y < -400) a.life = 0;
   }
   G.arrows = G.arrows.filter(a => a.life > 0);
 
@@ -640,62 +665,97 @@ function text(s, x, y, size, color, align = 'center', weight = 900) {
   ctx.fillStyle = color;
   ctx.fillText(s, x, y);
 }
-const castleGateY = () => lerp(110, 335, G.prog);
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+const CH = 240;
+const chunkRange = () => [Math.floor((G.scroll - 80) / CH), Math.floor((G.scroll + H + 460) / CH)];
+const chunkY = wy => G.scroll - wy + H; // world distance -> world y
 
+function drawSky() {
+  const b = G.biome, hy = horizonY(0);
+  const g = ctx.createLinearGradient(0, 0, 0, hy);
+  g.addColorStop(0, b.sky1); g.addColorStop(1, b.sky2);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, hy + 4);
+  const t = performance.now() / 1000;
+  ctx.globalAlpha = 0.85;
+  for (let i = 0; i < 5; i++) {
+    const cx = ((hash(i * 31 + 1) * (W + 240) + t * (5 + hash(i + 9) * 7)) % (W + 240)) - 120;
+    const cy = 40 + hash(i * 7 + 2) * 90, k = 0.7 + hash(i * 3 + 5) * 0.6;
+    ellipse(cx, cy, 42 * k, 12 * k, '#fff'); ellipse(cx + 18 * k, cy - 7 * k, 24 * k, 12 * k, '#fff'); ellipse(cx - 16 * k, cy - 5 * k, 20 * k, 10 * k, '#fff');
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Flat ground: hill body, patches, tufts, road. Upright decor is returned for y-sorting with actors.
 function drawGround() {
   const b = G.biome;
-  ctx.fillStyle = b.g1; ctx.fillRect(0, 0, W, H);
-  const CH = 240, c0 = Math.floor((G.scroll - 80) / CH), c1 = Math.floor((G.scroll + H + 80) / CH);
-  const sy = wy => G.scroll - wy + H;
-  // ground patches
+  ctx.fillStyle = b.g1;
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let X = 0; X <= W; X += 18) ctx.lineTo(X, horizonY(X));
+  ctx.lineTo(W, horizonY(W)); ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+  const [c0, c1] = chunkRange();
   for (let c = c0; c <= c1; c++) {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 7; i++) { // patches
       const s = c * 131 + i * 17;
-      const x = hash(s) * W, y = sy(c * CH + hash(s + 1) * CH);
-      ellipse(x, y, 30 + hash(s + 2) * 50, 14 + hash(s + 3) * 20, hash(s + 4) < 0.5 ? b.g2 : b.g3);
+      const w = warp(-240 + hash(s) * (W + 480), chunkY(c * CH + hash(s + 1) * CH));
+      if (hidden(w) || w.y > H + 60) continue;
+      ctx.fillStyle = hash(s + 4) < 0.5 ? b.g2 : b.g3;
+      ctx.beginPath(); ctx.ellipse(w.x, w.y, (30 + hash(s + 2) * 50) * w.s, (14 + hash(s + 3) * 20) * w.s * Math.max(0.2, w.c), 0, 0, TAU); ctx.fill();
     }
-    for (let i = 0; i < 14; i++) { // tufts
+    ctx.fillStyle = b.g2;
+    for (let i = 0; i < 20; i++) { // tufts
       const s = c * 977 + i * 31;
-      const x = hash(s) * W, y = sy(c * CH + hash(s + 1) * CH);
-      ctx.fillStyle = b.g2; ctx.fillRect(x, y, 2, 5); ctx.fillRect(x + 3, y - 1, 2, 6); ctx.fillRect(x + 6, y + 1, 2, 4);
+      const w = warp(-240 + hash(s) * (W + 480), chunkY(c * CH + hash(s + 1) * CH));
+      if (hidden(w) || w.y > H + 10) continue;
+      const k = w.s;
+      ctx.fillRect(w.x, w.y, 2 * k, 5 * k); ctx.fillRect(w.x + 3 * k, w.y - k, 2 * k, 6 * k); ctx.fillRect(w.x + 6 * k, w.y + k, 2 * k, 4 * k);
     }
   }
-  // road leading to castle gate
-  const top = castleGateY() - 4, rw = lerp(40, 84, G.prog);
-  ctx.fillStyle = b.edge;
-  ctx.beginPath();
-  ctx.moveTo(W / 2 - rw / 2 - 5, top); ctx.lineTo(W / 2 + rw / 2 + 5, top);
-  ctx.lineTo(W / 2 + 47, H); ctx.lineTo(W / 2 - 47, H); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = b.road;
-  ctx.beginPath();
-  ctx.moveTo(W / 2 - rw / 2, top); ctx.lineTo(W / 2 + rw / 2, top);
-  ctx.lineTo(W / 2 + 42, H); ctx.lineTo(W / 2 - 42, H); ctx.closePath(); ctx.fill();
+  // road over the hill to the castle gate
+  const topY = Math.max(castleWorldY(), HORIZON_WY);
+  const ys = [];
+  for (let y = H + 60; y > topY; y -= 24) ys.push(y);
+  ys.push(topY);
+  const strip = (half, color) => {
+    ctx.fillStyle = color; ctx.beginPath();
+    ys.forEach((y, i) => { const w = warp(W / 2 - half, y); i ? ctx.lineTo(w.x, w.y) : ctx.moveTo(w.x, w.y); });
+    for (let i = ys.length - 1; i >= 0; i--) { const w = warp(W / 2 + half, ys[i]); ctx.lineTo(w.x, w.y); }
+    ctx.closePath(); ctx.fill();
+  };
+  strip(47, b.edge); strip(42, b.road);
   for (let c = c0; c <= c1; c++) { // pebbles & ruts
     for (let i = 0; i < 7; i++) {
       const s = c * 613 + i * 7;
-      const y = sy(c * CH + hash(s) * CH);
-      if (y < top + 6) continue;
-      const x = W / 2 + (hash(s + 1) - 0.5) * 70;
-      ellipse(x, y, 2 + hash(s + 2) * 3, 1.5 + hash(s + 3) * 2, b.edge);
+      const y = chunkY(c * CH + hash(s) * CH);
+      if (y < topY + 6) continue;
+      const w = warp(W / 2 + (hash(s + 1) - 0.5) * 70, y);
+      if (w.y > H + 10) continue;
+      ctx.fillStyle = b.edge;
+      ctx.beginPath(); ctx.ellipse(w.x, w.y, (2 + hash(s + 2) * 3) * w.s, (1.5 + hash(s + 3) * 2) * w.s * Math.max(0.3, w.c), 0, 0, TAU); ctx.fill();
     }
   }
-  // decor
+}
+function collectDecor(out) {
+  const b = G.biome, [c0, c1] = chunkRange();
   for (let c = c0; c <= c1; c++) {
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       const s = c * 7331 + i * 101;
-      const left = hash(s) < 0.5;
-      const x = left ? 12 + hash(s + 1) * 180 : W - 12 - hash(s + 1) * 180;
-      const y = sy(c * CH + hash(s + 2) * CH);
-      if (y < -60 || y > H + 60) continue;
-      const kind = b.decor[Math.floor(hash(s + 3) * b.decor.length)];
-      drawDecor(kind, x, y, 0.8 + hash(s + 4) * 0.5, s);
+      const x = hash(s) < 0.5 ? -230 + hash(s + 1) * 440 : W + 230 - hash(s + 1) * 440;
+      const y = chunkY(c * CH + hash(s + 2) * CH);
+      const w = warp(x, y);
+      if (hidden(w) || w.y < -20 || w.y > H + 80) continue;
+      out.push({ y, k: 2, w, kind: b.decor[Math.floor(hash(s + 3) * b.decor.length)], sc: 0.8 + hash(s + 4) * 0.5, seed: s });
     }
   }
-  // distance haze toward the horizon
-  const g = ctx.createLinearGradient(0, 0, 0, 260);
-  g.addColorStop(0, 'rgba(225,235,245,0.55)');
-  g.addColorStop(1, 'rgba(225,235,245,0)');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 260);
+}
+function drawHaze() {
+  const hy = horizonY(W / 2);
+  const g = ctx.createLinearGradient(0, hy - 10, 0, hy + 230);
+  g.addColorStop(0, hexA(G.biome.sky2, 0.75));
+  g.addColorStop(1, hexA(G.biome.sky2, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, hy - 10, W, 240);
 }
 
 function drawDecor(kind, x, y, s, seed) {
@@ -764,9 +824,10 @@ function drawDecor(kind, x, y, s, seed) {
 }
 
 function drawCastle() {
-  const p = G.prog, sc = lerp(0.3, 1, p), gy = castleGateY(), b = G.biome, t = performance.now() / 1000;
+  const cw = warp(W / 2, castleWorldY()), b = G.biome, t = performance.now() / 1000;
   const stone = b.stone;
-  ctx.save(); ctx.translate(W / 2, gy); ctx.scale(sc, sc);
+  const sc = cw.s * (0.5 + 0.5 * G.prog * G.prog); // extra distance shrink so it grows as you approach
+  ctx.save(); ctx.translate(cw.x, cw.y); ctx.scale(sc, sc);
   ellipse(0, 4, 200, 24, 'rgba(0,0,0,0.22)');
   const crenel = (x0, x1, y, c) => { ctx.fillStyle = c; for (let x = x0; x < x1 - 4; x += 20) ctx.fillRect(x, y - 12, 12, 12); };
   const flag = (x, y, col) => {
@@ -827,7 +888,8 @@ function drawTraveler() {
   const walking = G.walk > 1 || (G.state === 'arrive' && G.walk <= 0);
   const st = walking ? Math.sin(tr.anim) : 0, bob = walking ? Math.abs(Math.cos(tr.anim)) * 2 : 0;
   const dead = G.state === 'gameover';
-  ctx.save(); ctx.globalAlpha = tr.alpha; ctx.translate(tr.x, tr.y);
+  const tw = warp(tr.x, tr.y);
+  ctx.save(); ctx.globalAlpha = tr.alpha; ctx.translate(tw.x, tw.y); ctx.scale(tw.s, tw.s);
   ellipse(0, 6, 16, 6, 'rgba(0,0,0,0.25)');
   if (dead) ctx.rotate(Math.min(G.stateT * 3, 1) * 1.4);
   // legs (seen from behind)
@@ -849,8 +911,8 @@ function drawTraveler() {
   ctx.restore();
 }
 
-function drawFigure(e, x, y, rot, alpha, dead) {
-  const d = e.d, k = e.r / 14, t = e.t || 0;
+function drawFigure(e, x, y, rot, alpha, dead, sc = 1) {
+  const d = e.d, k = e.r / 14 * sc, t = e.t || 0;
   ctx.save(); ctx.translate(x, y); ctx.globalAlpha = alpha;
   if (!dead) ellipse(0, 11 * k, 13 * k, 5 * k, 'rgba(0,0,0,0.25)');
   if (rot) ctx.rotate(rot);
@@ -920,9 +982,9 @@ function drawFigure(e, x, y, rot, alpha, dead) {
   if (!dead && e.flash > 0) { ctx.globalAlpha = alpha * 0.8; circle(0, -6, 14, '#fff'); }
   ctx.restore();
   if (!dead && e.maxHp > 1 && e.hp < e.maxHp && e.type !== 'king') {
-    const w = e.r * 2;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x - w / 2, y - e.r * 2 - 10, w, 4);
-    ctx.fillStyle = '#ff5a5a'; ctx.fillRect(x - w / 2, y - e.r * 2 - 10, w * e.hp / e.maxHp, 4);
+    const w = e.r * 2 * sc, by = y - e.r * 2 * sc - 10;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(x - w / 2, by, w, 4);
+    ctx.fillStyle = '#ff5a5a'; ctx.fillRect(x - w / 2, by, w * e.hp / e.maxHp, 4);
   }
 }
 
@@ -1108,29 +1170,42 @@ function render() {
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
   ctx.translate(shx, shy);
+  drawSky();
+  const castleFar = hidden(warp(W / 2, castleWorldY()));
+  if (castleFar) drawCastle(); // peeking over the hill, the ground covers its base
   drawGround();
-  drawCastle();
-  for (const b of G.blasts) {
-    const k = b.t / 0.45;
+  drawHaze();
+  for (const bl of G.blasts) {
+    const k = bl.t / 0.45, w = warp(bl.x, bl.y);
     ctx.globalAlpha = 1 - k;
-    circle(b.x, b.y, 20 + k * 80, '#ffb347'); circle(b.x, b.y, 10 + k * 50, '#fff3c4');
+    circle(w.x, w.y, (20 + k * 80) * w.s, '#ffb347'); circle(w.x, w.y, (10 + k * 50) * w.s, '#fff3c4');
     ctx.globalAlpha = 1;
   }
   for (const pk of G.pickups) {
     if (pk.life < 2 && Math.floor(pk.t * 10) % 2) continue;
-    const by = Math.sin(pk.t * 4) * 3;
-    ellipse(pk.x, pk.y + 10, 9, 3, 'rgba(0,0,0,0.25)');
-    heartPath(pk.x, pk.y - 10 + by, 22); ctx.fillStyle = '#ff4d5e'; ctx.fill();
+    const w = warp(pk.x, pk.y), by = Math.sin(pk.t * 4) * 3;
+    ellipse(w.x, w.y + 10 * w.s, 9 * w.s, 3 * w.s, 'rgba(0,0,0,0.25)');
+    heartPath(w.x, w.y + (by - 10) * w.s, 22 * w.s); ctx.fillStyle = '#ff4d5e'; ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
   }
-  for (const c of G.corpses) drawFigure(c.e, c.x, c.y, c.rot, clamp(c.life / 0.6, 0, 1), true);
-  // y-sorted actors
-  const actors = G.enemies.map(e => ({ y: e.y, e }));
-  actors.push({ y: G.traveler.y, tr: true });
+  for (const c of G.corpses) { const w = warp(c.x, c.y); if (!hidden(w)) drawFigure(c.e, w.x, w.y, c.rot, clamp(c.life / 0.6, 0, 1), true, w.s); }
+  // y-sorted actors, trees and castle (painter's order over the hill)
+  const actors = [];
+  for (const e of G.enemies) { const w = warp(e.x, e.y); if (!hidden(w)) actors.push({ y: e.y, k: 0, e, w }); }
+  actors.push({ y: G.traveler.y, k: 1 });
+  collectDecor(actors);
+  if (!castleFar) actors.push({ y: castleWorldY(), k: 3 });
   actors.sort((a, b) => a.y - b.y);
-  for (const a of actors) a.tr ? drawTraveler() : drawFigure(a.e, a.e.x, a.e.y, 0, 1, false);
+  for (const a of actors) {
+    if (a.k === 0) drawFigure(a.e, a.w.x, a.w.y, 0, 1, false, a.w.s);
+    else if (a.k === 1) drawTraveler();
+    else if (a.k === 2) drawDecor(a.kind, a.w.x, a.w.y, a.sc * a.w.s, a.seed);
+    else drawCastle();
+  }
   for (const a of G.arrows) {
-    ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(a.a);
+    const w = warp(a.x, a.y), w2 = warp(a.x + a.vx * 0.02, a.y + a.vy * 0.02);
+    if (hidden(w)) continue;
+    ctx.save(); ctx.translate(w.x, w.y); ctx.rotate(Math.atan2(w2.y - w.y, w2.x - w.x)); ctx.scale(w.s, w.s);
     ctx.strokeStyle = '#6b4423'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(6, 0); ctx.stroke();
     ctx.fillStyle = '#ccc'; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(4, -3); ctx.lineTo(4, 3); ctx.fill();
     ctx.fillStyle = '#eee'; ctx.fillRect(-15, -3, 5, 2); ctx.fillRect(-15, 1, 5, 2);
