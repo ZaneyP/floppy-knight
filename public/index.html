@@ -291,18 +291,20 @@ const NEW_ENEMY = {
   9: 'NEW: Elite bandits (gold trim) are tougher and worth double.',
 };
 
-// Upgrades offered between towns (pick 1 of 3)
+// Shop: every upgrade is always for sale; each level costs more gold than the last.
 const UPGRADES = [
-  { id: 'spin', name: 'Whirlwind', max: 3, desc: l => l === 0 ? 'CLICK to spin your knight into a sword tornado.' : `Whirlwind recharges faster (${SPIN_CD[l + 1]}s).` },
-  { id: 'length', name: 'Longer Blade', max: 4, desc: () => 'More reach. Bigger arcs, faster tip.' },
-  { id: 'width', name: 'Broadsword', max: 4, desc: () => 'A wider blade that is easier to connect with.' },
-  { id: 'archers', name: 'Hired Archer', max: 3, desc: l => l === 0 ? 'An archer walks with the traveler and shoots bandits.' : 'Hire another archer for the escort.' },
-  { id: 'keen', name: 'Keen Edge', max: 3, desc: () => 'Slower swings still cut, and crits come easier.' },
-  { id: 'vigor', name: 'Sturdy Boots', max: 3, desc: () => 'Traveler gets +1 max heart (and heals 1).' },
-  { id: 'buckler', name: 'Buckler', max: 3, desc: l => `Traveler blocks the first ${l + 1} hit${l ? 's' : ''} on every road.` },
-  { id: 'growth', name: "Giant's Draught", max: 3, desc: () => 'Your knight grows bigger: longer limbs, longer sword.' },
-  { id: 'herbs', name: 'Healing Herbs', max: Infinity, desc: () => 'Fully heal the traveler.', cond: () => G.hp < G.maxHp },
+  { id: 'spin', name: 'Whirlwind', costs: [60, 120, 200], desc: l => l === 0 ? 'Unlock: CLICK to spin into a tornado.' : `Spin recharges faster (${SPIN_CD[l]}s → ${SPIN_CD[l + 1]}s).` },
+  { id: 'length', name: 'Longer Blade', costs: [40, 80, 140, 220], desc: () => 'More reach, bigger arcs, faster tip.' },
+  { id: 'width', name: 'Broadsword', costs: [40, 80, 140, 220], desc: () => 'Wider blade. Easier to hit and block.' },
+  { id: 'archers', name: 'Hired Archer', costs: [90, 180, 300], desc: l => l === 0 ? 'An archer escorts the traveler.' : 'Hire another escort archer.' },
+  { id: 'keen', name: 'Keen Edge', costs: [50, 110, 190], desc: () => 'Slower swings cut. Crits come easier.' },
+  { id: 'vigor', name: 'Sturdy Boots', costs: [60, 120, 200], desc: () => '+1 max heart for the traveler.' },
+  { id: 'buckler', name: 'Buckler', costs: [50, 100, 170], desc: l => `Block the first ${l + 1} hit${l ? 's' : ''} on every road.` },
+  { id: 'growth', name: "Giant's Draught", costs: [70, 150, 250], desc: () => 'Your knight grows 15% bigger.' },
+  { id: 'herbs', name: 'Healing Herbs', heal: true, desc: () => 'Fully heal the traveler (15g per heart).' },
 ];
+const upgMaxed = u => u.heal ? G.hp >= G.maxHp : G.upg[u.id] >= u.costs.length;
+const upgCost = u => u.heal ? (G.maxHp - G.hp) * 15 : u.costs[G.upg[u.id]];
 const freshUpg = () => ({ spin: 0, length: 0, width: 0, archers: 0, keen: 0, vigor: 0, buckler: 0, growth: 0, herbs: 0 });
 const ALLY_OFF = [[-62, 16], [62, 16], [0, 64]];
 
@@ -317,7 +319,7 @@ const G = {
   shake: 0, hitstop: 0, combo: 0, comboT: 0, kills: 0, levelKills: 0, bonus: 0, whooshCd: 0,
   traveler: { x: W / 2, y: TRAVELER_Y, anim: 0, hurtT: 0, alpha: 1 },
   town: townName(1), biome: BIOMES[0], boss: null, bossSpawned: false, isBoss: false, newHigh: false,
-  upg: freshUpg(), choices: [], spinT: 0, spinCd: 0, spinDir: 1, blocks: 0, allyCd: [], allyArrows: [],
+  upg: freshUpg(), gold: 0, goldBonus: 0, shopMsg: null, spinT: 0, spinCd: 0, spinDir: 1, blocks: 0, allyCd: [], allyArrows: [],
 };
 buildKnight(W / 2, H * 0.5);
 let paused = false;
@@ -327,7 +329,7 @@ window.addEventListener('blur', pause);
 
 function startGame() {
   G.level = 1; G.score = 0; G.hp = G.maxHp = 5; G.kills = 0; G.combo = 0; G.newHigh = false;
-  G.upg = freshUpg(); G.spinCd = 0;
+  G.upg = freshUpg(); G.spinCd = 0; G.gold = 0;
   buildKnight(K.ax, K.ay);
   startLevel();
 }
@@ -351,29 +353,45 @@ function beginArrive() {
 function completeLevel() {
   G.state = 'complete'; G.stateT = 0;
   G.score += G.bonus;
+  G.goldBonus = 20 + G.level * 5;
+  G.gold += G.goldBonus;
   G.hp = Math.min(G.maxHp, G.hp + 1);
+  G.shopMsg = null;
   saveBest(G.level);
   sfx.fanfare();
-  const pool = UPGRADES.filter(u => G.upg[u.id] < u.max && (!u.cond || u.cond()));
-  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
-  G.choices = pool.slice(0, 3);
 }
-const CARD_Y = 372, CARD_H = 112, CARD_GAP = 124;
-const cardAt = (x, y) => {
-  for (let i = 0; i < G.choices.length; i++) {
-    const cy = CARD_Y + i * CARD_GAP;
-    if (x > 40 && x < W - 40 && y > cy && y < cy + CARD_H) return i;
+// Shop layout (logical px)
+const SHOP_Y = 222, ROW_H = 62, ROW_GAP = 67;
+const CONT = { x: 110, y: 832, w: W - 220, h: 52 };
+const shopRowAt = (x, y) => {
+  if (x < 32 || x > W - 32) return -1;
+  for (let i = 0; i < UPGRADES.length; i++) {
+    const ry = SHOP_Y + i * ROW_GAP;
+    if (y > ry && y < ry + ROW_H) return i;
   }
   return -1;
 };
-function chooseUpgrade(u) {
-  G.upg[u.id]++;
-  if (u.id === 'vigor') { G.maxHp++; G.hp = Math.min(G.maxHp, G.hp + 1); }
-  if (u.id === 'herbs') G.hp = G.maxHp;
-  if (u.id === 'length' || u.id === 'width' || u.id === 'growth') buildKnight(K.ax, K.ay);
+const onContinue = (x, y) => x > CONT.x && x < CONT.x + CONT.w && y > CONT.y && y < CONT.y + CONT.h;
+function buyUpgrade(u, i) {
+  const ry = SHOP_Y + i * ROW_GAP;
+  if (upgMaxed(u)) { G.shopMsg = { i, s: u.heal ? 'Already at full health' : 'Fully upgraded', t: 1.2, bad: true }; return; }
+  const cost = upgCost(u);
+  if (G.gold < cost) { G.shopMsg = { i, s: `Need ${cost - G.gold} more gold`, t: 1.2, bad: true }; sfx.clank(); return; }
+  G.gold -= cost;
+  if (u.heal) G.hp = G.maxHp;
+  else {
+    G.upg[u.id]++;
+    if (u.id === 'vigor') { G.maxHp++; G.hp = Math.min(G.maxHp, G.hp + 1); }
+    if (u.id === 'length' || u.id === 'width' || u.id === 'growth') buildKnight(K.ax, K.ay);
+  }
+  G.shopMsg = { i, s: u.heal ? 'Healed!' : `${u.name} upgraded!`, t: 1.2, bad: false };
   sfx.pickup();
+  burst(W - 100, ry + ROW_H / 2, '#ffd34d', 14, 180, 3);
+}
+function leaveShop() {
+  const firstSpin = G.upg.spin === 1 && !G.spinTaught;
   G.level++; startLevel();
-  if (u.id === 'spin' && G.upg.spin === 1) addText('CLICK to spin!', W / 2, 560, '#7dff9a', 26, 3);
+  if (firstSpin) { G.spinTaught = true; addText('CLICK to spin!', W / 2, 560, '#7dff9a', 26, 3); }
 }
 function gameOver() {
   G.state = 'gameover'; G.stateT = 0;
@@ -388,10 +406,10 @@ function onClick(x, y) {
   if (x > W - 64 && y > H - 64) { setMuted(!muted); return; }
   if (paused) { paused = false; return; }
   if (G.state === 'title') startGame();
-  else if (G.state === 'complete' && G.stateT > 0.8) {
-    if (!G.choices.length) { G.level++; startLevel(); return; }
-    const i = cardAt(x, y);
-    if (i >= 0) chooseUpgrade(G.choices[i]);
+  else if (G.state === 'complete' && G.stateT > 0.6) {
+    if (onContinue(x, y)) { leaveShop(); return; }
+    const i = shopRowAt(x, y);
+    if (i >= 0) buyUpgrade(UPGRADES[i], i);
   }
   else if (G.state === 'play' || G.state === 'intro' || G.state === 'arrive') trySpin();
   else if (G.state === 'gameover' && G.stateT > 1.0) startGame();
@@ -571,6 +589,7 @@ function killEnemy(e, nx, ny, sp) {
   const mult = 1 + Math.floor(G.combo / 5);
   const pts = e.d.score * (e.elite ? 2 : 1) * mult;
   G.score += pts;
+  G.gold += Math.round(e.d.score * (e.elite ? 2 : 1) / 20);
   const w = warp(e.x, e.y);
   addText('+' + pts, w.x, w.y - 22 * w.s, '#ffe066', 16, 0.9);
   if (G.combo >= 5 && G.combo % 5 === 0) addText(G.combo + ' COMBO!  x' + mult, W / 2, 330, '#ff9f43', 30, 1.3);
@@ -776,6 +795,7 @@ function update(dt) {
   for (const b of G.blasts) b.t += dt;
   G.blasts = G.blasts.filter(b => b.t < 0.45);
 
+  if (G.shopMsg) { G.shopMsg.t -= dt; if (G.shopMsg.t <= 0) G.shopMsg = null; }
   G.comboT -= dt;
   if (G.comboT <= 0) G.combo = 0;
   G.shake *= Math.pow(0.0015, dt);
@@ -1279,7 +1299,8 @@ function drawHUD() {
   }
   text(G.score.toLocaleString(), W - 16, 28, 26, '#ffe27a', 'right');
   text(`LEVEL ${G.level}  ·  Road to ${G.town}`, W / 2, 64, 17, '#f4ece0');
-  if (G.combo >= 2) text(`combo ${G.combo}  x${1 + Math.floor(G.combo / 5)}`, W - 16, 64 - 0, 14, '#ffb35c', 'right');
+  drawGold(W - 16, 64, 16);
+  if (G.combo >= 2) text(`combo ${G.combo}  x${1 + Math.floor(G.combo / 5)}`, W - 16, 100, 14, '#ffb35c', 'right');
   // journey bar
   const x0 = 40, x1 = W - 96, y = H - 30;
   ctx.fillStyle = 'rgba(15,10,8,0.5)'; ctx.beginPath(); ctx.roundRect(x0 - 16, y - 14, x1 - x0 + 40, 28, 14); ctx.fill();
@@ -1298,6 +1319,12 @@ function drawHUD() {
     ctx.fillStyle = '#b44ad6'; ctx.fillRect(W / 2 - 150, 116, 300 * bs.hp / bs.maxHp, 10);
   }
   drawMute();
+}
+function drawGold(x, y, size) { // right-aligned "(coin) 123"
+  ctx.font = `900 ${size}px "Trebuchet MS", "Segoe UI", system-ui, sans-serif`;
+  const tw = ctx.measureText(String(G.gold)).width, r = size * 0.5;
+  text(String(G.gold), x, y, size, '#ffd34d', 'right');
+  circle(x - tw - r - 6, y, r, '#e0a82e'); circle(x - tw - r - 6, y, r * 0.65, '#ffd34d');
 }
 function drawMute() {
   const x = W - 34, y = H - 30;
@@ -1348,34 +1375,47 @@ function drawOverlay() {
     if (G.isBoss) wrapText('BOSS: The Bandit King waits on this road!', W / 2, yy, W - 130, 16, '#e7b6ff', 22);
     ctx.globalAlpha = 1;
   } else if (G.state === 'complete') {
-    ctx.fillStyle = 'rgba(10,8,6,0.55)'; ctx.fillRect(0, 0, W, H);
-    panel(110, 210);
-    text(`Arrived at ${G.town}!`, W / 2, 152, 30, '#ffe27a');
-    text(`Bandits slain: ${G.levelKills}   ·   Bonus +${G.bonus.toLocaleString()}`, W / 2, 200, 18, '#f4ece0', 'center', 700);
-    text(`The traveler rests: +1 ♥`, W / 2, 234, 18, '#ff8a9a', 'center', 700);
-    text(`Score: ${G.score.toLocaleString()}`, W / 2, 282, 24, '#ffe27a');
-    if (!G.choices.length) {
-      if (G.stateT > 0.8 && blink) text('CLICK TO CONTINUE', W / 2, 420, 22, '#fff');
-    } else {
-      text('CHOOSE AN UPGRADE', W / 2, 348, 22, '#fff');
-      const hov = G.stateT > 0.8 ? cardAt(pointer.x, pointer.y) : -1;
-      G.choices.forEach((u, i) => {
-        const y = CARD_Y + i * CARD_GAP, on = i === hov, lvl = G.upg[u.id];
-        ctx.fillStyle = on ? 'rgba(70,52,28,0.95)' : 'rgba(22,16,12,0.9)';
-        ctx.beginPath(); ctx.roundRect(40, y, W - 80, CARD_H, 16); ctx.fill();
-        ctx.strokeStyle = on ? '#ffe27a' : 'rgba(255,226,122,0.35)'; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
-        drawUpgradeIcon(u.id, 90, y + CARD_H / 2);
-        const title = u.name + (u.max !== Infinity && u.max > 1 ? `  ${'★'.repeat(lvl + 1)}${'☆'.repeat(u.max - lvl - 1)}` : '');
-        text(title, 136, y + 32, 20, on ? '#ffe27a' : '#f4ece0', 'left');
-        ctx.font = '700 15px "Trebuchet MS", "Segoe UI", system-ui, sans-serif';
-        const words = u.desc(lvl).split(' '); let line = '', ly = y + 62;
-        for (const wd of words) {
-          const t2 = line ? line + ' ' + wd : wd;
-          if (ctx.measureText(t2).width > W - 200 && line) { text(line, 136, ly, 15, '#d8cfc0', 'left', 700); line = wd; ly += 21; } else line = t2;
+    ctx.fillStyle = 'rgba(10,8,6,0.72)'; ctx.fillRect(0, 0, W, H);
+    text(`Arrived at ${G.town}!`, W / 2, 112, 28, '#ffe27a');
+    text(`Slain ${G.levelKills}  ·  Bonus +${G.bonus.toLocaleString()}  ·  +${G.goldBonus} gold  ·  +1 ♥`, W / 2, 146, 14, '#f4ece0', 'center', 700);
+    text('THE BLACKSMITH', W / 2 - 60, 192, 20, '#fff', 'center');
+    drawGold(W - 44, 192, 22);
+    const hov = G.stateT > 0.6 ? shopRowAt(pointer.x, pointer.y) : -1;
+    UPGRADES.forEach((u, i) => {
+      const y = SHOP_Y + i * ROW_GAP, lvl = u.heal ? 0 : G.upg[u.id], maxed = upgMaxed(u);
+      const cost = maxed ? 0 : upgCost(u), afford = !maxed && G.gold >= cost, on = i === hov;
+      ctx.fillStyle = on ? 'rgba(70,52,28,0.95)' : 'rgba(26,19,14,0.92)';
+      ctx.beginPath(); ctx.roundRect(32, y, W - 64, ROW_H, 12); ctx.fill();
+      ctx.strokeStyle = on ? '#ffe27a' : 'rgba(255,226,122,0.25)'; ctx.lineWidth = on ? 2.5 : 1.5; ctx.stroke();
+      ctx.save(); ctx.translate(66, y + ROW_H / 2); ctx.scale(0.72, 0.72); ctx.translate(-66, -(y + ROW_H / 2));
+      drawUpgradeIcon(u.id, 66, y + ROW_H / 2);
+      ctx.restore();
+      text(u.name, 100, y + 20, 17, maxed && !u.heal ? '#a9e8b4' : '#f4ece0', 'left');
+      if (!u.heal) { // level pips
+        ctx.font = '900 17px "Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+        const px = 100 + ctx.measureText(u.name).width + 12;
+        for (let j = 0; j < u.costs.length; j++) {
+          ctx.fillStyle = j < lvl ? '#ffd34d' : 'rgba(255,255,255,0.18)';
+          ctx.beginPath(); ctx.roundRect(px + j * 15, y + 14, 11, 11, 3); ctx.fill();
         }
-        if (line) text(line, 136, ly, 15, '#d8cfc0', 'left', 700);
-      });
-    }
+      }
+      const msg = G.shopMsg && G.shopMsg.i === i ? G.shopMsg : null;
+      text(msg ? msg.s : maxed && !u.heal ? 'Fully upgraded' : u.desc(lvl), 100, y + 44, 13, msg ? (msg.bad ? '#ff8a8a' : '#7dff9a') : '#cfc5b5', 'left', 700);
+      // price tag
+      const bx = W - 128, bw = 82;
+      ctx.fillStyle = maxed ? 'rgba(255,255,255,0.08)' : afford ? (on ? '#ffd34d' : '#c9962a') : 'rgba(120,40,40,0.55)';
+      ctx.beginPath(); ctx.roundRect(bx, y + 14, bw, 34, 17); ctx.fill();
+      if (maxed) text(u.heal ? 'FULL' : 'MAX', bx + bw / 2, y + 31, 15, '#a99f90');
+      else {
+        text(`${cost}`, bx + bw / 2 + 8, y + 31, 16, afford ? '#2a1a08' : '#ffb3b3', 'center');
+        ctx.font = '900 16px "Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+        circle(bx + bw / 2 + 8 - ctx.measureText(String(cost)).width / 2 - 11, y + 31, 6, afford ? '#2a1a08' : '#ffb3b3');
+      }
+    });
+    const onC = G.stateT > 0.6 && onContinue(pointer.x, pointer.y);
+    ctx.fillStyle = onC ? '#7dff9a' : '#3f9a5a';
+    ctx.beginPath(); ctx.roundRect(CONT.x, CONT.y, CONT.w, CONT.h, 26); ctx.fill();
+    text('CONTINUE  ▶', W / 2, CONT.y + CONT.h / 2, 22, onC ? '#123018' : '#fff');
   } else if (G.state === 'gameover') {
     ctx.fillStyle = `rgba(40,0,0,${Math.min(0.5, G.stateT * 0.5)})`; ctx.fillRect(0, 0, W, H);
     if (G.stateT > 0.6) {
