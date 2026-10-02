@@ -155,14 +155,16 @@ function buildKnight(x, y) {
   K.len = (74 + u.length * 17) * k;   // blade reach
   K.wide = 1 + u.width * 0.45;        // blade thickness (visual)
   K.pad = 3 + u.width * 5;            // extra hit tolerance
-  const P = (dx, dy, im) => ({ x: x + dx * k, y: y + dy * k, px: x + dx * k, py: y + dy * k, im });
+  // Held by the ankles: (x, y) is the grip between the feet, body hangs upside down below it.
+  K.ax = x; K.ay = y;
+  const P = (dx, dy, im) => ({ x: x + dx * k, y: y + (102 - dy) * k, px: x + dx * k, py: y + (102 - dy) * k, im });
   const p = {
-    head: P(0, 0, 0), neck: P(0, 18, 1), pelvis: P(0, 54, 1),
-    lElb: P(-20, 28, 1), lHand: P(-30, 44, 1),
-    rElb: P(20, 28, 1), rHand: P(30, 44, 1),
-    lKnee: P(-8, 78, 1), lFoot: P(-10, 102, 1),
-    rKnee: P(8, 78, 1), rFoot: P(10, 102, 1),
-    tip: P(40, 44 + K.len / k, 0.35), // heavy blade end = momentum
+    head: P(0, 0, 1), neck: P(0, 18, 1), pelvis: P(0, 54, 1),
+    lElb: P(-20, 28, 1), lHand: P(-30, 14, 1),
+    rElb: P(20, 28, 1), rHand: P(30, 14, 1),
+    lKnee: P(-8, 78, 1), lFoot: P(-10, 102, 0),
+    rKnee: P(8, 78, 1), rFoot: P(10, 102, 0),
+    tip: P(40, 14 - K.len / k, 0.35), // heavy blade end = momentum
   };
   const s = (a, b, l) => ({ a: p[a], b: p[b], l });
   K.p = p;
@@ -179,7 +181,7 @@ const GRAV = 0.32, DAMP = 0.985;
 const SPIN_CD = [0, 4, 3, 2.2];
 function trySpin() {
   if (!G.upg.spin || G.spinCd > 0 || G.spinT > 0) return;
-  const p = K.p, h = p.head, t = p.tip;
+  const p = K.p, h = { x: K.ax, y: K.ay }, t = p.tip;
   const cross = (t.x - h.x) * (t.y - t.py) - (t.y - h.y) * (t.x - t.px);
   G.spinDir = cross < 0 ? -1 : 1;
   G.spinT = 0.75; G.spinCd = SPIN_CD[G.upg.spin];
@@ -187,11 +189,14 @@ function trySpin() {
 }
 function stepKnight() {
   const p = K.p;
-  let dx = pointer.x - p.head.x, dy = pointer.y - p.head.y;
+  let dx = pointer.x - K.ax, dy = pointer.y - K.ay;
   const d = Math.hypot(dx, dy), mx = 55; // clamp teleports (touch taps) so physics can't explode
   if (d > mx) { dx *= mx / d; dy *= mx / d; }
-  p.head.px = p.head.x; p.head.py = p.head.y;
-  p.head.x += dx; p.head.y += dy;
+  K.ax += dx; K.ay += dy;
+  for (const [f, side] of [[p.lFoot, -1], [p.rFoot, 1]]) { // the grip: both ankles follow the mouse
+    f.px = f.x; f.py = f.y;
+    f.x = K.ax + side * 6 * K.k; f.y = K.ay;
+  }
   const spinning = G.spinT > 0, g = spinning ? 0 : GRAV;
   for (const q of K.pts) {
     if (!q.im) continue;
@@ -199,10 +204,10 @@ function stepKnight() {
     q.px = q.x; q.py = q.y;
     q.x += vx; q.y += vy + g;
   }
-  if (spinning) { // whirlwind: drive the body around the head
+  if (spinning) { // whirlwind: drive the body around the grip
     G.spinT -= 1 / 60;
-    const h = p.head;
-    for (const [q, f, cap] of [[p.tip, 5, 36], [p.rHand, 2.5, 16], [p.rElb, 1.5, 10], [p.lHand, 1.5, 12], [p.pelvis, 1, 8], [p.lFoot, 1.2, 12], [p.rFoot, 1.2, 12]]) {
+    const h = { x: K.ax, y: K.ay };
+    for (const [q, f, cap] of [[p.tip, 5, 36], [p.rHand, 2.5, 16], [p.rElb, 1.5, 10], [p.lHand, 1.5, 12], [p.head, 1.5, 14], [p.pelvis, 1, 8], [p.lKnee, 0.6, 5], [p.rKnee, 0.6, 5]]) {
       const rx = q.x - h.x, ry = q.y - h.y, rl = Math.hypot(rx, ry) || 1;
       const tx = -ry / rl * G.spinDir, ty = rx / rl * G.spinDir;
       if ((q.x - q.px) * tx + (q.y - q.py) * ty < cap * K.k / KNIGHT_BASE) { q.x += tx * f; q.y += ty * f; }
@@ -323,7 +328,7 @@ window.addEventListener('blur', pause);
 function startGame() {
   G.level = 1; G.score = 0; G.hp = G.maxHp = 5; G.kills = 0; G.combo = 0; G.newHigh = false;
   G.upg = freshUpg(); G.spinCd = 0;
-  buildKnight(K.p.head.x, K.p.head.y);
+  buildKnight(K.ax, K.ay);
   startLevel();
 }
 function startLevel() {
@@ -365,7 +370,7 @@ function chooseUpgrade(u) {
   G.upg[u.id]++;
   if (u.id === 'vigor') { G.maxHp++; G.hp = Math.min(G.maxHp, G.hp + 1); }
   if (u.id === 'herbs') G.hp = G.maxHp;
-  if (u.id === 'length' || u.id === 'width' || u.id === 'growth') buildKnight(K.p.head.x, K.p.head.y);
+  if (u.id === 'length' || u.id === 'width' || u.id === 'growth') buildKnight(K.ax, K.ay);
   sfx.pickup();
   G.level++; startLevel();
   if (u.id === 'spin' && G.upg.spin === 1) addText('CLICK to spin!', W / 2, 560, '#7dff9a', 26, 3);
@@ -1132,7 +1137,7 @@ function drawKnight() {
   if (G.spinT > 0) {
     ctx.globalAlpha = Math.min(1, G.spinT * 3) * 0.3;
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 8 * K.wide;
-    ctx.beginPath(); ctx.arc(p.head.x, p.head.y, K.len + 40 * k, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(K.ax, K.ay, K.len + 100 * k, 0, TAU); ctx.stroke();
     ctx.globalAlpha = 1;
   }
   // sword trail
@@ -1157,8 +1162,10 @@ function drawKnight() {
   const h = p.head, ang = Math.atan2(h.y - p.neck.y, h.x - p.neck.x) + Math.PI / 2;
   const hvx = h.x - h.px, hvy = h.y - h.py;
   ctx.strokeStyle = '#d63a3a'; ctx.lineWidth = 6 * k;
-  ctx.beginPath(); ctx.moveTo(h.x, h.y - 6 * k);
-  ctx.quadraticCurveTo(h.x - clamp(hvx, -20, 20) * 1.2 * k, h.y - 22 * k, h.x - (clamp(hvx, -30, 30) * 2 + 10) * k, h.y - (14 + clamp(hvy, -20, 20)) * k);
+  const hl = Math.hypot(h.x - p.neck.x, h.y - p.neck.y) || 1, hux = (h.x - p.neck.x) / hl, huy = (h.y - p.neck.y) / hl;
+  const pvx = clamp(hvx, -25, 25) * k, pvy = clamp(hvy, -25, 25) * k; // plume trails behind the motion
+  ctx.beginPath(); ctx.moveTo(h.x + hux * 6 * k, h.y + huy * 6 * k);
+  ctx.quadraticCurveTo(h.x + hux * 20 * k - pvx * 1.2, h.y + huy * 20 * k - pvy * 1.2, h.x + (hux * 16 - huy * 10) * k - pvx * 2, h.y + (huy * 16 + hux * 10) * k - pvy * 2);
   ctx.stroke();
   ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(ang); ctx.scale(k, k);
   circle(0, 0, 13, OUT); circle(0, 0, 11, STEEL);
@@ -1325,7 +1332,7 @@ function drawOverlay() {
     text('KNIGHT', W / 2, 400, 70, '#ffe27a');
     text('Guard the traveler on the road to the next castle.', W / 2, 462, 17, '#f4ece0', 'center', 700);
     panel(500, 190);
-    wrapText('Your mouse is the knight. Move it to fling him around.', W / 2, 532, W - 120, 17, '#fff', 24);
+    wrapText('You hold the knight by his ankles. Move the mouse to fling him around.', W / 2, 532, W - 120, 17, '#fff', 24);
     wrapText('Swing the sword FAST to slay bandits. Slow taps just nudge.', W / 2, 588, W - 120, 17, '#fff', 24);
     wrapText('Every town is harder than the last.', W / 2, 644, W - 120, 17, '#ffb35c', 24);
     if (blink) text('CLICK TO BEGIN', W / 2, 750, 30, '#fff');
